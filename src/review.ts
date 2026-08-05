@@ -61,44 +61,90 @@ export interface RefutationVerdict {
   readonly reason: string;
 }
 
+/**
+ * Generation is tuned for recall, not precision. The panel supplies precision.
+ *
+ * The first version of this prompt did both jobs: it demanded only defects
+ * "a senior engineer would stop the merge for", listed six categories to
+ * suppress, and told the model that returning nothing was expected. Behind a
+ * panel that independently suppresses again, that is two noise filters in
+ * series, and it measured as near-silence: across five real pull requests
+ * carrying 19 known findings it generated 4 candidates and reported 0.
+ *
+ * A generator that stays quiet cannot be rescued by anything downstream. So
+ * this asks for anything plausible and pushes the judgement call to the
+ * skeptics, which is the whole reason they exist. The exclusions that survive
+ * are only the ones that would waste panel votes on questions another tool has
+ * already answered.
+ *
+ * Demanding a concrete mechanism is what keeps this from becoming a noise
+ * generator: a finding that names the triggering input and the resulting
+ * failure can be checked, and one that does not can be dismissed cheaply.
+ */
 export const FIND_SYSTEM_PROMPT = [
-  "You are a senior engineer reviewing a pull request diff.",
+  "You are a senior engineer reviewing a pull request diff. Your job is to surface",
+  "every plausible defect in the changed code.",
   "",
-  "Report only defects a senior engineer would stop the merge for: incorrect logic,",
-  "data loss, race conditions, resource leaks, security holes, broken error handling,",
-  "and violations of the repository conventions you are given.",
+  "A separate verification stage independently checks each finding you report, so",
+  "you do not need to be certain. You need to be specific. Report anything you",
+  "would want a second pair of eyes on.",
   "",
-  "Do NOT report any of the following. They are noise, and reporting them makes the",
-  "whole review worth less than saying nothing:",
-  "- Anything a linter, type checker, formatter, or compiler would catch.",
-  "- Missing tests, missing docs, or general code-quality observations.",
-  "- Pre-existing issues on lines the diff does not modify.",
+  "Look for: incorrect logic, data loss, race conditions, resource leaks, security",
+  "holes, unhandled errors, missed edge cases, platform-specific assumptions, and",
+  "violations of the repository conventions you are given.",
+  "",
+  "For each finding, name the concrete mechanism: the input, state, or sequence",
+  "that triggers it, and what goes wrong as a result. A finding with no mechanism",
+  "cannot be verified and will be discarded, so spend your words there.",
+  "",
+  "Skip only these, which waste verification effort:",
+  "- Anything a linter, type checker, formatter, or compiler already catches.",
   "- Style preferences not stated in the repository conventions.",
-  "- Speculation about code you cannot see in the diff.",
-  "- Changes that are plainly intentional and central to the stated purpose.",
+  "- Issues on lines the diff does not modify.",
+  "- Restating what the change is intended to do as though it were a defect.",
   "",
-  "It is correct and expected to return an empty list. Most pull requests contain",
-  "no defect worth blocking.",
+  "Report up to 10 findings, most severe first.",
   "",
   'Respond with JSON only: {"findings":[{"file":"path","line":123,"title":"one line",',
-  '"detail":"two or three sentences naming the concrete failure"}]}',
+  '"detail":"two or three sentences naming the concrete failure mechanism"}]}',
 ].join("\n");
 
+/**
+ * Refutation must be grounded, not merely doubtful.
+ *
+ * The first version ended with "If you are uncertain, refute it." Combined with
+ * majority rule that is a very high bar, because a skeptic reading a diff in
+ * isolation is almost always somewhat uncertain, and two such skeptics sink a
+ * finding. It showed: on a process-cleanup pull request, candidates describing
+ * locale-dependent `ps` parsing and incomplete POSIX subtree kills were both
+ * dropped 2-to-1, and both correspond to issues the paid reviewer flagged as
+ * Major on the same lines.
+ *
+ * Requiring a stated reason keeps the skepticism while removing the bias.
+ * "I cannot confirm this from the diff alone" stops being a rejection, which is
+ * right: it is an argument about the reviewer's information, not about the
+ * code. The 3-of-3 rejections under the old prompt (a claimed undefined in a
+ * toast title, a variable said to be out of scope that would not have compiled)
+ * are exactly the kind that still fail this version, because a concrete reason
+ * they are wrong is easy to name.
+ */
 export const REFUTE_SYSTEM_PROMPT = [
-  "You are refuting a claimed code-review finding. Your job is to show it is WRONG,",
-  "not to confirm it. Assume it is wrong until the diff proves otherwise.",
+  "You are verifying a claimed code-review finding against the diff. Decide whether",
+  "the claim is wrong.",
   "",
-  "Refute the finding if any of these hold:",
-  "- The described failure cannot actually occur given the code in the diff.",
-  "- The claim depends on code that is not shown, so it is unverifiable.",
-  "- The issue pre-exists on lines the diff does not modify.",
-  "- It is a nitpick, a style preference, or something CI already catches.",
-  "- The reasoning is plausible but the specific mechanism described is inaccurate.",
+  "Refute it only if you can name a specific reason, one of:",
+  "- The described failure cannot occur, and you can say what prevents it.",
+  "- The mechanism described is inaccurate: the code actually does something else.",
+  "- The issue is on lines the diff does not modify.",
+  "- A linter, type checker, or compiler would already catch it.",
+  "- It restates the change's intended behaviour as though it were a defect.",
   "",
-  "If you are uncertain, refute it. A missed defect costs one bug; a false report",
-  "costs the reviewer's credibility.",
+  "Do NOT refute merely because you are unsure, because the finding seems minor, or",
+  "because you cannot see the rest of the codebase. Uncertainty is not refutation.",
+  "If the claim is plausible and you cannot say what is wrong with it, let it stand.",
   "",
-  'Respond with JSON only: {"refuted":true|false,"reason":"one sentence"}',
+  'Respond with JSON only: {"refuted":true|false,"reason":"the specific reason it is',
+  'wrong, or why it stands"}',
 ].join("\n");
 
 export function buildFindPrompt(input: {
@@ -445,6 +491,13 @@ export async function reviewDiff(input: {
     note(
       `  ${entry.survived ? "KEEP" : "DROP"} (${refuted}/${entry.verdicts.length} refuted) ${entry.finding.title}`,
     );
+    // The stated reason is the only way to tell a panel that is discriminating
+    // from one that is merely suppressing. Without it, a run of DROPs looks the
+    // same whether the candidates were junk or the skeptics were too harsh.
+    for (const verdict of entry.verdicts) {
+      if (verdict.reason.length === 0) continue;
+      note(`      ${verdict.refuted ? "refuted" : "stands"}: ${verdict.reason.slice(0, 160)}`);
+    }
   }
 
   return {
