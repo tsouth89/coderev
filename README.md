@@ -11,11 +11,16 @@ Cheap models generate plausible-and-wrong findings freely. A reviewer that
 reports five issues per PR and is wrong on four is worse than no reviewer,
 because it trains everyone to skim past the check.
 
-So generation and judgement are separated. Findings are generated once at
-temperature 0, then each one is sent to three independent skeptics prompted to
-**refute** it, sampled at temperature 1 so the votes are genuinely independent.
-A finding survives only if fewer than half the panel refutes it. Uncertain
-votes, unparseable votes, and failed requests all count as refutations.
+So generation and judgement are separated. Generation is tuned for recall: it
+asks for every plausible defect with a named mechanism, because a generator
+that stays quiet cannot be rescued by anything downstream. Each finding then
+goes to a panel of three skeptics, each with an assigned lens — checkability,
+mechanism accuracy against the code, scope-and-intent — so every ground for
+refutation is somebody's whole job rather than something three identical
+voters might each happen to skip. A finding survives only if fewer than half
+the panel refutes it, and a refutation must name its specific reason:
+uncertainty alone does not count, but neither does a claim survive that is too
+vague to check. Unparseable votes and failed requests count as refutations.
 
 This is deliberately token-hungry, roughly `1 + 3N` calls per PR. That is the
 point rather than a cost to be minimised: tokens are cheap, and the panel is
@@ -60,8 +65,11 @@ export REVIEW_API_KEY=sk-...
 node bin/review-pr.ts --pr 123 --repo ../some-repo
 ```
 
-Add `--post` to comment on the PR instead of printing. `--help` on either
-binary lists every flag.
+Add `--post` to comment on the PR instead of printing, and `--context` to
+fetch the full contents of changed files into the find stage (experimental:
+in benchmarks it produced better-grounded findings but did not improve recall
+of cross-file defects, and it suppressed candidate volume on very large PRs).
+`--help` on either binary lists every flag.
 
 ## Providers
 
