@@ -53,6 +53,44 @@ export const REFUTATION_PANEL_SIZE = 3;
  */
 const PANEL_CONCURRENCY = 8;
 
+/**
+ * One lens per panel seat, appended to the shared refute prompt.
+ *
+ * Three identical skeptics at temperature 1 apply the refutation grounds
+ * stochastically: each one samples which grounds it takes seriously. It
+ * showed in practice — "potentially breaking existing callers" names no
+ * trigger, exactly what the vagueness ground exists to kill, yet only one
+ * voter applied that ground and the claim survived 2-1. Assigning each seat
+ * a lens makes every ground somebody's whole job, so coverage of the grounds
+ * is guaranteed by construction instead of sampled. Majority rule is
+ * unchanged, which means one lens alone can never sink a finding: a claim
+ * that is specific, accurate, and in scope still stands 3-0.
+ *
+ * The lens rides at the end of the user prompt rather than in per-seat system
+ * prompts because the panel's token cost lives in the shared diff prefix.
+ * Distinct system prompts would give each seat its own cache miss over the
+ * whole diff; a trailing suffix keeps one miss per finding.
+ */
+export const REFUTE_LENSES: ReadonlyArray<string> = [
+  [
+    "Your assigned focus for this vote: CHECKABILITY. Does the claim name the",
+    "concrete input, state, or sequence that triggers the failure? If it only",
+    "says something 'may', 'could', or 'potentially' happens without saying",
+    "when, refute it on that ground.",
+  ].join("\n"),
+  [
+    "Your assigned focus for this vote: MECHANISM ACCURACY. Re-read the",
+    "relevant hunks and trace what the code actually does. If the code's real",
+    "behaviour differs from what the claim describes, refute it on that ground.",
+  ].join("\n"),
+  [
+    "Your assigned focus for this vote: SCOPE AND INTENT. Is the issue on lines",
+    "this diff modifies? Is it the change's intended behaviour restated as a",
+    "defect? Would a compiler, type checker, or linter already catch it? If any",
+    "of these hold, refute it on that ground.",
+  ].join("\n"),
+];
+
 /** Zero for generation (reproducible), non-zero for the panel (independent). */
 const FIND_TEMPERATURE = 0;
 const REFUTE_TEMPERATURE = 1;
@@ -367,6 +405,7 @@ interface Vote {
 async function castVote(input: {
   readonly findingIndex: number;
   readonly prompt: string;
+  readonly lens: string;
   readonly provider: ResolvedReviewProvider;
   readonly onProgress: (message: string) => void;
 }): Promise<Vote> {
@@ -374,7 +413,9 @@ async function castVote(input: {
     const result = await requestCompletion({
       provider: input.provider,
       systemPrompt: REFUTE_SYSTEM_PROMPT,
-      userPrompt: input.prompt,
+      userPrompt: `${input.prompt}
+
+${input.lens}`,
       temperature: REFUTE_TEMPERATURE,
       onRetry: (message) => input.onProgress(`  retry: ${message}`),
     });
@@ -416,19 +457,20 @@ async function runPanel(input: {
     buildRefutePrompt({ finding, diff: input.diff }),
   );
   const tasks = input.candidates.flatMap((_, findingIndex) =>
-    Array.from({ length: REFUTATION_PANEL_SIZE }, () => findingIndex),
+    Array.from({ length: REFUTATION_PANEL_SIZE }, (_, seat) => ({ findingIndex, seat })),
   );
   if (tasks.length === 0) return [];
 
-  const vote = (findingIndex: number) =>
+  const vote = (task: { readonly findingIndex: number; readonly seat: number }) =>
     castVote({
-      findingIndex,
-      prompt: prompts[findingIndex] ?? "",
+      findingIndex: task.findingIndex,
+      prompt: prompts[task.findingIndex] ?? "",
+      lens: REFUTE_LENSES[task.seat % REFUTE_LENSES.length] ?? "",
       provider: input.provider,
       onProgress: input.onProgress,
     });
 
-  const first = await vote(tasks[0] as number);
+  const first = await vote(tasks[0] as { findingIndex: number; seat: number });
   const rest = await mapWithConcurrency(tasks.slice(1), PANEL_CONCURRENCY, vote);
   const votes = [first, ...rest];
 
