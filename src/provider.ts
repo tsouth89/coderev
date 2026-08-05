@@ -259,6 +259,8 @@ export interface CompletionRequest {
    * looks like agreement but is one opinion counted repeatedly.
    */
   readonly temperature: number;
+  /** Called when a transient failure is about to be retried. */
+  readonly onRetry?: (message: string) => void;
 }
 
 /** Read usage out of a response body without trusting its shape. */
@@ -350,7 +352,53 @@ export function applyStreamLine(
   }
 }
 
+/**
+ * Statuses worth trying again.
+ *
+ * 429 is a rate limit and 5xx is the provider's problem, both of which usually
+ * clear on their own. 4xx otherwise means the request itself is wrong (bad key,
+ * unknown model, malformed body) and retrying just burns time and money on the
+ * same rejection.
+ */
+export function isRetryableStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status < 600);
+}
+
+export class RetryableProviderError extends ProviderRequestError {
+  constructor(detail: string) {
+    super(detail);
+    this.name = "RetryableProviderError";
+  }
+}
+
+const RETRY_DELAYS_MS = [2_000, 8_000, 20_000];
+
+/**
+ * Retry transient failures with backoff.
+ *
+ * A benchmark makes hundreds of calls over an hour or more, so a single 429 or
+ * a dropped socket is close to certain. Without this, one blip either kills a
+ * whole review or silently converts a panel vote into a refutation, which
+ * quietly biases the result toward dropping findings.
+ */
 export async function requestCompletion(input: CompletionRequest): Promise<CompletionResult> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      return await requestCompletionOnce(input);
+    } catch (cause) {
+      lastError = cause;
+      const retryable = cause instanceof RetryableProviderError;
+      const delay = RETRY_DELAYS_MS[attempt];
+      if (!retryable || delay === undefined) break;
+      input.onRetry?.(`${(cause as Error).message}; retrying in ${delay / 1000}s`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
+}
+
+async function requestCompletionOnce(input: CompletionRequest): Promise<CompletionResult> {
   const controller = new AbortController();
   const total = setTimeout(() => controller.abort(), COMPLETION_TOTAL_TIMEOUT_MS);
   let idle: NodeJS.Timeout | undefined;
@@ -379,14 +427,18 @@ export async function requestCompletion(input: CompletionRequest): Promise<Compl
       }),
       signal: controller.signal,
     }).catch((cause: unknown) => {
-      throw new ProviderRequestError(cause instanceof Error ? cause.message : String(cause));
+      // Connection resets and DNS blips are exactly what backoff is for.
+      throw new RetryableProviderError(cause instanceof Error ? cause.message : String(cause));
     });
 
     if (!response.ok) {
       // Body often carries the actual reason (bad key, unknown model, no
       // credit), and losing it turns every failure into an opaque status code.
       const detail = await response.text().catch(() => "");
-      throw new ProviderRequestError(`HTTP ${response.status} ${detail.slice(0, 300)}`);
+      const message = `HTTP ${response.status} ${detail.slice(0, 300)}`;
+      throw isRetryableStatus(response.status)
+        ? new RetryableProviderError(message)
+        : new ProviderRequestError(message);
     }
     if (response.body === null) throw new ProviderRequestError("response had no body");
 
@@ -405,7 +457,7 @@ export async function requestCompletion(input: CompletionRequest): Promise<Compl
         for (const line of lines) applyStreamLine(line, state);
       }
     } catch (cause) {
-      throw new ProviderRequestError(
+      throw new RetryableProviderError(
         controller.signal.aborted
           ? `stream stalled for ${COMPLETION_IDLE_TIMEOUT_MS}ms`
           : `stream failed: ${cause instanceof Error ? cause.message : String(cause)}`,

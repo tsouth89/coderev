@@ -247,11 +247,25 @@ export async function runBenchmark(input: {
   const cases = input.suite.cases.slice(0, input.limit);
   const models = input.models.length > 0 ? input.models : [input.baseProvider.model];
 
+  // Every diff is fetched up front so a bad PR number or a GitHub outage fails
+  // in the first few seconds rather than an hour into a paid run.
   note(`Fetching ${cases.length} diff(s)...`);
   const diffs = new Map<number, string>();
+  const unfetchable: Array<number> = [];
   for (const benchmarkCase of cases) {
-    const raw = await fetchPullRequestDiff(String(benchmarkCase.pr), input.cwd);
-    diffs.set(benchmarkCase.pr, truncateDiff(raw).diff);
+    try {
+      const raw = await fetchPullRequestDiff(String(benchmarkCase.pr), input.cwd);
+      diffs.set(benchmarkCase.pr, truncateDiff(raw).diff);
+    } catch (cause) {
+      unfetchable.push(benchmarkCase.pr);
+      note(`  PR ${benchmarkCase.pr}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  }
+  if (unfetchable.length === cases.length) {
+    throw new Error(`Could not fetch any diff. Is --repo pointing at the right checkout?`);
+  }
+  if (unfetchable.length > 0) {
+    note(`Skipping ${unfetchable.length} PR(s) whose diff could not be fetched.`);
   }
 
   const scores: Array<ModelScore> = [];
@@ -260,16 +274,44 @@ export async function runBenchmark(input: {
     const provider = { ...input.baseProvider, model };
     const caseScores: Array<CaseScore> = [];
 
-    for (const benchmarkCase of cases) {
-      note(`PR ${benchmarkCase.pr}...`);
+    for (const [index, benchmarkCase] of cases.entries()) {
+      const diff = diffs.get(benchmarkCase.pr);
+      if (diff === undefined) {
+        caseScores.push(
+          scoreCase({
+            benchmarkCase,
+            findings: [],
+            candidates: 0,
+            usage: EMPTY_USAGE,
+            failed: true,
+          }),
+        );
+        continue;
+      }
+
+      note(`PR ${benchmarkCase.pr} (${index + 1}/${cases.length})...`);
+      const startedAt = Date.now();
       const result = await reviewDiff({
-        diff: diffs.get(benchmarkCase.pr) ?? "",
+        diff,
         conventions: null,
         provider,
+        // Without this a review is four silent minutes, and a ten-PR run looks
+        // indistinguishable from a hang.
+        onProgress: (message) => note(`  ${message}`),
       });
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+
       if (result.generationError !== null) {
-        note(`  FAILED: ${result.generationError}`);
+        note(`  FAILED after ${elapsed}s: ${result.generationError}`);
+      } else {
+        const cost = estimateCostUsd(model, result.usage, input.env ?? {});
+        note(
+          `  ${result.candidates.length} generated, ${result.findings.length} kept, ${elapsed}s, ` +
+            `${result.usage.inputTokens} in (${result.usage.cachedInputTokens} cached)` +
+            (cost === null ? "" : `, ~$${cost.toFixed(4)}`),
+        );
       }
+
       caseScores.push(
         scoreCase({
           benchmarkCase,

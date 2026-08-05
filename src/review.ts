@@ -103,19 +103,32 @@ export function buildFindPrompt(input: {
   return `${conventions}Review this diff.\n\n\`\`\`diff\n${input.diff}\n\`\`\``;
 }
 
+/**
+ * The diff comes first and the claim last, which is the opposite of how it
+ * reads most naturally.
+ *
+ * Prompt caches key on a prefix. With the claim first, every vote for every
+ * finding has a different prefix from its first tokens, so nothing is ever
+ * reusable and each of the `3N` votes pays full price for the same diff. With
+ * the diff first, all `3N` votes on a pull request share one long prefix and
+ * differ only in a short suffix, so exactly one of them is a cache miss.
+ *
+ * Measured on a 25k-token diff, that is most of the bill: uncached input was
+ * 62% of the cost of a real run.
+ */
 export function buildRefutePrompt(input: {
   readonly finding: ReviewFinding;
   readonly diff: string;
 }): string {
   return [
-    `Claimed finding in ${input.finding.file} at line ${input.finding.line}:`,
-    input.finding.title,
-    input.finding.detail,
-    "",
     "The diff under review:",
     "```diff",
     input.diff,
     "```",
+    "",
+    `Claimed finding in ${input.finding.file} at line ${input.finding.line}:`,
+    input.finding.title,
+    input.finding.detail,
   ].join("\n");
 }
 
@@ -265,42 +278,93 @@ export interface AdjudicatedFinding {
   readonly usage: TokenUsage;
 }
 
-async function adjudicate(input: {
-  readonly finding: ReviewFinding;
+interface Vote {
+  readonly findingIndex: number;
+  readonly verdict: RefutationVerdict;
+  readonly usage: TokenUsage;
+}
+
+async function castVote(input: {
+  readonly findingIndex: number;
+  readonly prompt: string;
+  readonly provider: ResolvedReviewProvider;
+  readonly onProgress: (message: string) => void;
+}): Promise<Vote> {
+  try {
+    const result = await requestCompletion({
+      provider: input.provider,
+      systemPrompt: REFUTE_SYSTEM_PROMPT,
+      userPrompt: input.prompt,
+      temperature: REFUTE_TEMPERATURE,
+      onRetry: (message) => input.onProgress(`  retry: ${message}`),
+    });
+    return {
+      findingIndex: input.findingIndex,
+      verdict: parseVerdict(result.content),
+      usage: result.usage,
+    };
+  } catch {
+    // A panel member that errors out must not silently clear the finding.
+    return {
+      findingIndex: input.findingIndex,
+      verdict: { refuted: true, reason: "vote failed" },
+      usage: EMPTY_USAGE,
+    };
+  }
+}
+
+/**
+ * Run every panel vote for a pull request, warming the prompt cache first.
+ *
+ * Votes are flattened across findings rather than run panel by panel, because
+ * they all share one cacheable prefix (see {@link buildRefutePrompt}) and the
+ * grouping only matters when the verdicts are counted at the end.
+ *
+ * The first vote runs alone. Firing the whole batch at once means none of them
+ * has written the cache yet when the others start, so every one is a miss: a
+ * real run showed 50.7% cached where the same prefix repeated 3N times should
+ * approach 100%. Paying one extra sequential round to make the remaining votes
+ * cache hits is a large net win, because uncached input dominates the bill.
+ */
+async function runPanel(input: {
+  readonly candidates: ReadonlyArray<ReviewFinding>;
   readonly diff: string;
   readonly provider: ResolvedReviewProvider;
-}): Promise<AdjudicatedFinding> {
-  const prompt = buildRefutePrompt({ finding: input.finding, diff: input.diff });
-  const votes = await Promise.all(
-    Array.from({ length: REFUTATION_PANEL_SIZE }, async () => {
-      try {
-        const result = await requestCompletion({
-          provider: input.provider,
-          systemPrompt: REFUTE_SYSTEM_PROMPT,
-          userPrompt: prompt,
-          temperature: REFUTE_TEMPERATURE,
-        });
-        return { verdict: parseVerdict(result.content), usage: result.usage };
-      } catch {
-        // A panel member that errors out must not silently clear the finding.
-        return {
-          verdict: { refuted: true, reason: "vote failed" } satisfies RefutationVerdict,
-          usage: EMPTY_USAGE,
-        };
-      }
-    }),
+  readonly onProgress: (message: string) => void;
+}): Promise<ReadonlyArray<AdjudicatedFinding>> {
+  const prompts = input.candidates.map((finding) =>
+    buildRefutePrompt({ finding, diff: input.diff }),
   );
+  const tasks = input.candidates.flatMap((_, findingIndex) =>
+    Array.from({ length: REFUTATION_PANEL_SIZE }, () => findingIndex),
+  );
+  if (tasks.length === 0) return [];
 
-  const verdicts = votes.map((vote) => vote.verdict);
-  // Seeded as reported:true so that `reported` stays a plain AND across the
-  // panel; seeding from EMPTY_USAGE would mark every panel unreported.
-  const seed: TokenUsage = { ...EMPTY_USAGE, reported: true };
-  return {
-    finding: input.finding,
-    survived: survivesPanel(verdicts),
-    verdicts,
-    usage: votes.reduce<TokenUsage>((total, vote) => addUsage(total, vote.usage), seed),
-  };
+  const vote = (findingIndex: number) =>
+    castVote({
+      findingIndex,
+      prompt: prompts[findingIndex] ?? "",
+      provider: input.provider,
+      onProgress: input.onProgress,
+    });
+
+  const first = await vote(tasks[0] as number);
+  const rest = await mapWithConcurrency(tasks.slice(1), PANEL_CONCURRENCY, vote);
+  const votes = [first, ...rest];
+
+  return input.candidates.map((finding, findingIndex) => {
+    const mine = votes.filter((entry) => entry.findingIndex === findingIndex);
+    const verdicts = mine.map((entry) => entry.verdict);
+    // Seeded as reported:true so `reported` stays a plain AND across the panel;
+    // seeding from EMPTY_USAGE would mark every panel unreported.
+    const seed: TokenUsage = { ...EMPTY_USAGE, reported: true };
+    return {
+      finding,
+      survived: survivesPanel(verdicts),
+      verdicts,
+      usage: mine.reduce<TokenUsage>((total, entry) => addUsage(total, entry.usage), seed),
+    };
+  });
 }
 
 export interface DiffReviewResult {
@@ -346,6 +410,7 @@ export async function reviewDiff(input: {
       systemPrompt: FIND_SYSTEM_PROMPT,
       userPrompt: buildFindPrompt({ diff: input.diff, conventions: input.conventions }),
       temperature: FIND_TEMPERATURE,
+      onRetry: (message) => note(`  retry: ${message}`),
     });
   } catch (cause) {
     generationError = cause instanceof Error ? cause.message : String(cause);
@@ -362,9 +427,12 @@ export async function reviewDiff(input: {
   const candidates = parseFindings(found.content);
   note(`${candidates.length} candidate finding(s); refuting.`);
 
-  const adjudicated = await mapWithConcurrency(candidates, PANEL_CONCURRENCY, (finding) =>
-    adjudicate({ finding, diff: input.diff, provider: input.provider }),
-  );
+  const adjudicated = await runPanel({
+    candidates,
+    diff: input.diff,
+    provider: input.provider,
+    onProgress: note,
+  });
 
   for (const entry of adjudicated) {
     const refuted = entry.verdicts.filter((verdict) => verdict.refuted).length;
