@@ -79,7 +79,7 @@ variables, never a code change.
 | Variable | Purpose |
 | --- | --- |
 | `REVIEW_API_KEY` | Model key. Falls back to the provider's own variable (`DEEPSEEK_API_KEY`, etc). |
-| `REVIEW_PROVIDER` | `deepseek` (default), `openrouter`, `openai`. |
+| `REVIEW_PROVIDER` | `deepseek` (default), `openrouter`, `openai`, `meta`. |
 | `REVIEW_MODEL` | Overrides the provider's default model. |
 | `REVIEW_API_BASE_URL` | Any other compatible endpoint, including a local server. |
 

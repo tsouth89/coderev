@@ -67,6 +67,11 @@ export const REVIEW_PROVIDER_PRESETS: Readonly<Record<string, ReviewProviderPres
     defaultModel: "gpt-5.6-luna",
     apiKeyEnvVar: "OPENAI_API_KEY",
   },
+  meta: {
+    baseUrl: "https://api.meta.ai/v1",
+    defaultModel: "muse-spark-1.2",
+    apiKeyEnvVar: "META_API_KEY",
+  },
 };
 
 export const DEFAULT_REVIEW_PROVIDER = "deepseek";
@@ -212,6 +217,18 @@ export const MODEL_PRICING: Readonly<Record<string, ModelPrice>> = {
   "deepseek/deepseek-v4-flash": DEEPSEEK_V4_FLASH,
   "gpt-5.6-luna": { inputPerMillion: 0.2, outputPerMillion: 1.2 },
   "openai/gpt-5.6-luna": { inputPerMillion: 0.2, outputPerMillion: 1.2 },
+  // Meta Model API rates from launch coverage, 2026-08-05: NOT yet reconciled
+  // against an invoice. The contributor tier's discount is paid for with
+  // permission for Meta to train on prompts and completions, which for a
+  // reviewer means the diffs under review; it publishes no cached rate, so
+  // cached tokens bill at full input rate here, overstating rather than
+  // flattering it.
+  "muse-spark-1.2": {
+    inputPerMillion: 1.25,
+    outputPerMillion: 4.25,
+    cachedInputPerMillion: 0.15,
+  },
+  "muse-spark-1.2-contributor": { inputPerMillion: 0.1, outputPerMillion: 0.2 },
 };
 
 /** Dollar cost for measured usage, or null when it cannot be known honestly. */

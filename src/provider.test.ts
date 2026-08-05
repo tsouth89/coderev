@@ -40,6 +40,14 @@ describe("resolveReviewProvider", () => {
     assert.equal(resolved.ok && resolved.provider.apiKey, "generic");
   });
 
+  it("resolves the Meta preset", () => {
+    const resolved = resolveReviewProvider({ REVIEW_PROVIDER: "meta", META_API_KEY: "k" });
+    assert.partialDeepStrictEqual(resolved.ok && resolved.provider, {
+      baseUrl: "https://api.meta.ai/v1",
+      model: "muse-spark-1.2",
+    });
+  });
+
   it("switches provider by name", () => {
     const resolved = resolveReviewProvider({
       REVIEW_PROVIDER: "openrouter",
