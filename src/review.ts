@@ -26,12 +26,18 @@ import {
 /**
  * Diffs are truncated rather than chunked.
  *
- * A 200k-line refactor is not something a cheap model reviews usefully, and
- * silently splitting it into windows produces findings with no cross-file
- * context while costing the most tokens. Truncating and saying so in the
- * comment is the honest failure mode.
+ * A genuinely enormous refactor is not something a cheap model reviews
+ * usefully, and silently splitting it into windows produces findings with no
+ * cross-file context while costing the most tokens. Truncating and saying so in
+ * the comment is the honest failure mode.
+ *
+ * The limit is generous because the models this targets are not
+ * context-constrained: 600k characters is roughly 150k tokens against DeepSeek
+ * V4's 1M window. An earlier 240k limit was set by guesswork and would have
+ * silently truncated the single richest case in the benchmark suite, which
+ * would have quietly corrupted the comparison it exists to produce.
  */
-export const MAX_DIFF_CHARACTERS = 240_000;
+export const MAX_DIFF_CHARACTERS = 600_000;
 
 /** Votes per finding. Odd, so a majority always exists. */
 export const REFUTATION_PANEL_SIZE = 3;
