@@ -36,6 +36,13 @@ describe("matchesBaseline", () => {
     assert.equal(matchesBaseline({ file: "src/b.ts", line: 100 }, BASELINE), false);
   });
 
+  it("matches on file alone when the finding has no line number", () => {
+    // One run returned every finding at line 0; requiring proximity scored
+    // seven file-level hits as zero matches.
+    assert.equal(matchesBaseline({ file: "src/a.ts", line: 0 }, BASELINE), true);
+    assert.equal(matchesBaseline({ file: "src/other.ts", line: 0 }, BASELINE), false);
+  });
+
   it("normalises path separators and a leading ./", () => {
     assert.equal(matchesBaseline({ file: "src\\a.ts", line: 100 }, BASELINE), true);
     assert.equal(matchesBaseline({ file: "./src/a.ts", line: 100 }, BASELINE), true);

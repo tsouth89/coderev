@@ -70,6 +70,13 @@ function normalizePath(path: string): string {
   return path.replaceAll("\\", "/").replace(/^\.\//, "");
 }
 
+/**
+ * A finding with no usable line number matches on file alone. Models sometimes
+ * omit line numbers wholesale (one run returned seven findings all at line 0),
+ * and requiring line proximity then scores substantive file-level agreement as
+ * zero. File-only matching is weaker evidence, but "right file, no line" is
+ * agreement, not a miss.
+ */
 export function matchesBaseline(
   finding: { readonly file: string; readonly line: number },
   baseline: ReadonlyArray<BaselineFinding>,
@@ -78,7 +85,7 @@ export function matchesBaseline(
   return baseline.some(
     (entry) =>
       normalizePath(entry.file) === file &&
-      Math.abs(entry.line - finding.line) <= LINE_MATCH_TOLERANCE,
+      (finding.line <= 0 || Math.abs(entry.line - finding.line) <= LINE_MATCH_TOLERANCE),
   );
 }
 
