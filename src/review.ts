@@ -42,8 +42,16 @@ export const MAX_DIFF_CHARACTERS = 600_000;
 /** Votes per finding. Odd, so a majority always exists. */
 export const REFUTATION_PANEL_SIZE = 3;
 
-/** How many refutation panels run at once. Bounded to stay under rate limits. */
-const PANEL_CONCURRENCY = 4;
+/**
+ * How many panel votes run at once, after the cache-warming first vote.
+ *
+ * Sized against the loosened generator rather than the old one. Ten findings
+ * means thirty votes, which at four-at-a-time is eight sequential rounds of a
+ * reasoning model and would put a ten-PR benchmark past two hours. Eight halves
+ * that. Retries cover the rate limiting this risks, and the warm-up vote keeps
+ * the burst from being thirty simultaneous cache misses.
+ */
+const PANEL_CONCURRENCY = 8;
 
 /** Zero for generation (reproducible), non-zero for the panel (independent). */
 const FIND_TEMPERATURE = 0;
