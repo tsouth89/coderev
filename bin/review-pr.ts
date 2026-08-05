@@ -2,6 +2,7 @@
 import { readFile } from "node:fs/promises";
 
 import { parse, reportFailure, requireString } from "../src/args.ts";
+import { fetchPullRequestContext } from "../src/context.ts";
 import { fetchPullRequestDiff, postPullRequestComment } from "../src/github.ts";
 import { estimateCostUsd, resolveReviewProvider } from "../src/provider.ts";
 import { formatReviewComment, reviewDiff, truncateDiff, MAX_DIFF_CHARACTERS } from "../src/review.ts";
@@ -16,6 +17,7 @@ Flags:
   --post         Post the review as a PR comment instead of printing it.
   --conventions  Path to a conventions file to include in the prompt (e.g. AGENTS.md).
   --repo         Directory of the repository to review. Defaults to the working directory.
+  --context      Also fetch full changed-file contents and feed them to the find stage.
 
 Environment:
   REVIEW_API_KEY       Model API key. Falls back to the provider's own variable.
@@ -31,6 +33,7 @@ async function main(): Promise<number> {
       post: { type: "boolean", default: false },
       conventions: { type: "string" },
       repo: { type: "string" },
+      context: { type: "boolean", default: false },
     },
     usage: USAGE,
   });
@@ -65,10 +68,16 @@ async function main(): Promise<number> {
         })
       : null;
 
+  const context =
+    values.context === true
+      ? await fetchPullRequestContext(pr, cwd, (message) => console.log(message))
+      : null;
+
   console.log(`Reviewing PR ${pr} with ${provider.model}...`);
   const { findings, usage, generationError } = await reviewDiff({
     diff,
     conventions,
+    context,
     provider,
     onProgress: (message) => console.log(message),
   });

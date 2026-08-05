@@ -42,6 +42,56 @@ export function fetchPullRequestDiff(pr: string, cwd?: string): Promise<string> 
   return gh(["pr", "diff", pr], cwd);
 }
 
+export interface PullRequestFiles {
+  readonly headSha: string;
+  readonly paths: ReadonlyArray<string>;
+}
+
+/** The head SHA and changed-file paths of a pull request. */
+export async function fetchPullRequestFiles(pr: string, cwd?: string): Promise<PullRequestFiles> {
+  const raw = await gh(["pr", "view", pr, "--json", "headRefOid,files"], cwd);
+  const parsed: unknown = JSON.parse(raw);
+  if (typeof parsed !== "object" || parsed === null) throw new GhError("pr", "unexpected shape");
+  const record = parsed as Record<string, unknown>;
+  const headSha = typeof record.headRefOid === "string" ? record.headRefOid : "";
+  const files = Array.isArray(record.files) ? record.files : [];
+  const paths = files.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const path = (entry as Record<string, unknown>).path;
+    return typeof path === "string" ? [path] : [];
+  });
+  return { headSha, paths };
+}
+
+/**
+ * Fetch one file's raw content at a specific commit, via the GitHub API rather
+ * than the local checkout. Merged pull requests routinely have their branches
+ * deleted, so the head commit may not exist locally, but GitHub retains it.
+ * Returns null for anything unfetchable (deleted file, binary, too large):
+ * context is best-effort by design, and a missing file must degrade the review
+ * rather than fail it.
+ */
+export async function fetchFileAtRef(
+  path: string,
+  ref: string,
+  cwd?: string,
+): Promise<string | null> {
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  try {
+    return await gh(
+      [
+        "api",
+        "-H",
+        "Accept: application/vnd.github.raw",
+        `repos/{owner}/{repo}/contents/${encoded}?ref=${ref}`,
+      ],
+      cwd,
+    );
+  } catch {
+    return null;
+  }
+}
+
 export async function postPullRequestComment(
   pr: string,
   body: string,

@@ -20,6 +20,7 @@
  * Diffs are fetched once per PR and reused across models, so adding a model
  * costs model tokens rather than another pass over GitHub.
  */
+import { fetchPullRequestContext } from "./context.ts";
 import { fetchPullRequestDiff } from "./github.ts";
 import {
   addUsage,
@@ -239,6 +240,8 @@ export async function runBenchmark(input: {
   readonly baseProvider: ResolvedReviewProvider;
   readonly models: ReadonlyArray<string>;
   readonly limit: number;
+  /** Fetch full changed-file contents and feed them to the find stage. */
+  readonly withContext?: boolean;
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly onProgress?: (message: string) => void;
@@ -251,11 +254,18 @@ export async function runBenchmark(input: {
   // in the first few seconds rather than an hour into a paid run.
   note(`Fetching ${cases.length} diff(s)...`);
   const diffs = new Map<number, string>();
+  const contexts = new Map<number, string | null>();
   const unfetchable: Array<number> = [];
   for (const benchmarkCase of cases) {
     try {
       const raw = await fetchPullRequestDiff(String(benchmarkCase.pr), input.cwd);
       diffs.set(benchmarkCase.pr, truncateDiff(raw).diff);
+      contexts.set(
+        benchmarkCase.pr,
+        input.withContext === true
+          ? await fetchPullRequestContext(String(benchmarkCase.pr), input.cwd, note)
+          : null,
+      );
     } catch (cause) {
       unfetchable.push(benchmarkCase.pr);
       note(`  PR ${benchmarkCase.pr}: ${cause instanceof Error ? cause.message : String(cause)}`);
@@ -294,6 +304,7 @@ export async function runBenchmark(input: {
       const result = await reviewDiff({
         diff,
         conventions: null,
+        context: contexts.get(benchmarkCase.pr) ?? null,
         provider,
         // Without this a review is four silent minutes, and a ten-PR run looks
         // indistinguishable from a hang.

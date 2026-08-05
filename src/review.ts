@@ -166,12 +166,21 @@ export const REFUTE_SYSTEM_PROMPT = [
   'wrong, or why it stands"}',
 ].join("\n");
 
+/**
+ * Conventions, then file contents, then the diff last: the diff is the thing
+ * under review, and putting it at the end keeps it in the position models
+ * attend to most.
+ */
 export function buildFindPrompt(input: {
   readonly diff: string;
   readonly conventions: string | null;
+  readonly context?: string | null;
 }): string {
   const conventions = input.conventions ? `Repository conventions:\n\n${input.conventions}\n\n` : "";
-  return `${conventions}Review this diff.\n\n\`\`\`diff\n${input.diff}\n\`\`\``;
+  const context = input.context
+    ? `Full contents of the changed files, for context (the diff below is what you are reviewing):\n\n${input.context}\n\n`
+    : "";
+  return `${conventions}${context}Review this diff.\n\n\`\`\`diff\n${input.diff}\n\`\`\``;
 }
 
 /**
@@ -468,6 +477,8 @@ export interface DiffReviewResult {
 export async function reviewDiff(input: {
   readonly diff: string;
   readonly conventions: string | null;
+  /** Full changed-file contents; find-stage only. See src/context.ts. */
+  readonly context?: string | null;
   readonly provider: ResolvedReviewProvider;
   readonly onProgress?: (message: string) => void;
 }): Promise<DiffReviewResult> {
@@ -479,7 +490,11 @@ export async function reviewDiff(input: {
     found = await requestCompletion({
       provider: input.provider,
       systemPrompt: FIND_SYSTEM_PROMPT,
-      userPrompt: buildFindPrompt({ diff: input.diff, conventions: input.conventions }),
+      userPrompt: buildFindPrompt({
+        diff: input.diff,
+        conventions: input.conventions,
+        context: input.context ?? null,
+      }),
       temperature: FIND_TEMPERATURE,
       onRetry: (message) => note(`  retry: ${message}`),
     });

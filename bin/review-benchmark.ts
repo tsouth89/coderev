@@ -20,6 +20,7 @@ Flags:
   --model  Model to benchmark. Repeat to compare several. Defaults to REVIEW_MODEL.
   --limit  Benchmark only the first N recorded pull requests.
   --repo   Directory of the repository the suite refers to. Defaults to the working directory.
+  --context  Also fetch full changed-file contents and feed them to the find stage.
 
 Environment: same as coderev.
 
@@ -34,6 +35,7 @@ async function main(): Promise<number> {
       model: { type: "string", multiple: true },
       limit: { type: "string" },
       repo: { type: "string" },
+      context: { type: "boolean", default: false },
     },
     usage: USAGE,
   });
@@ -55,6 +57,7 @@ async function main(): Promise<number> {
     baseProvider: resolution.provider,
     models: Array.isArray(values.model) ? values.model : [],
     limit: Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : suite.cases.length,
+    withContext: values.context === true,
     ...(typeof values.repo === "string" ? { cwd: values.repo } : {}),
     env: process.env,
     onProgress: (message) => console.log(message),
