@@ -271,8 +271,11 @@ export function parseUsage(body: unknown): TokenUsage {
   const record = usage as Record<string, unknown>;
   const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
 
-  // OpenAI nests its cached count; DeepSeek reports it flat. Accept both rather
-  // than silently costing cache hits at the miss rate on one of them.
+  // OpenAI nests its cached count; DeepSeek reports it flat AND nested, with
+  // the same value in both. Taking the larger reads either vendor correctly;
+  // summing them double-counts every DeepSeek call, which reports more cached
+  // tokens than the request had input tokens and understates cost by ~2x once
+  // the impossible total is clamped back down.
   const details = record.prompt_tokens_details;
   const nestedCached =
     typeof details === "object" && details !== null
@@ -282,7 +285,7 @@ export function parseUsage(body: unknown): TokenUsage {
   return {
     inputTokens: num(record.prompt_tokens),
     outputTokens: num(record.completion_tokens),
-    cachedInputTokens: num(record.prompt_cache_hit_tokens) + nestedCached,
+    cachedInputTokens: Math.max(num(record.prompt_cache_hit_tokens), nestedCached),
     reported: true,
   };
 }

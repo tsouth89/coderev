@@ -132,6 +132,27 @@ describe("response parsing", () => {
   it("marks usage unreported when the provider omits it", () => {
     assert.equal(parseUsage({ choices: [] }).reported, false);
   });
+
+  it("does not double-count a provider that reports cached tokens twice", () => {
+    // Verbatim shape from a real DeepSeek response: the same cached count
+    // appears flat AND nested. Summing them reported more cached tokens than
+    // the request had input tokens, and the clamp in estimateCostUsd then
+    // billed the whole prompt at the cache-hit rate, understating cost ~2x.
+    const usage = parseUsage({
+      usage: {
+        prompt_tokens: 25405,
+        completion_tokens: 10794,
+        prompt_tokens_details: { cached_tokens: 25344 },
+        prompt_cache_hit_tokens: 25344,
+        prompt_cache_miss_tokens: 61,
+      },
+    });
+    assert.equal(usage.cachedInputTokens, 25344);
+    assert.ok(
+      usage.cachedInputTokens <= usage.inputTokens,
+      "cached input can never exceed total input",
+    );
+  });
 });
 
 describe("applyStreamLine", () => {
