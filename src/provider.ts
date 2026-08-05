@@ -170,19 +170,30 @@ export interface ModelPrice {
  *
  * Verified 2026-08-05.
  */
+const DEEPSEEK_V4_FLASH: ModelPrice = {
+  // Reconciled against a real DeepSeek billing export (309 requests, 34.4M
+  // input tokens): these three rates reproduce the invoiced total exactly, to
+  // the tenth of a cent, on every day in the period.
+  inputPerMillion: 0.14,
+  outputPerMillion: 0.28,
+  cachedInputPerMillion: 0.0028,
+};
+
+const DEEPSEEK_V4_PRO: ModelPrice = {
+  inputPerMillion: 0.435,
+  outputPerMillion: 0.87,
+  // From published rates, NOT reconciled against an invoice. Treat with more
+  // suspicion than the Flash numbers: it implies cache hits cost 0.8% of a
+  // miss, where Flash's verified ratio is 2%. Re-check once a Pro run appears
+  // in a billing export.
+  cachedInputPerMillion: 0.003625,
+};
+
 export const MODEL_PRICING: Readonly<Record<string, ModelPrice>> = {
-  "deepseek-v4-pro": {
-    inputPerMillion: 0.435,
-    outputPerMillion: 0.87,
-    cachedInputPerMillion: 0.003625,
-  },
-  "deepseek-v4-flash": { inputPerMillion: 0.14, outputPerMillion: 0.28 },
-  "deepseek/deepseek-v4-pro": {
-    inputPerMillion: 0.435,
-    outputPerMillion: 0.87,
-    cachedInputPerMillion: 0.003625,
-  },
-  "deepseek/deepseek-v4-flash": { inputPerMillion: 0.14, outputPerMillion: 0.28 },
+  "deepseek-v4-pro": DEEPSEEK_V4_PRO,
+  "deepseek-v4-flash": DEEPSEEK_V4_FLASH,
+  "deepseek/deepseek-v4-pro": DEEPSEEK_V4_PRO,
+  "deepseek/deepseek-v4-flash": DEEPSEEK_V4_FLASH,
   "gpt-5.6-luna": { inputPerMillion: 0.2, outputPerMillion: 1.2 },
   "openai/gpt-5.6-luna": { inputPerMillion: 0.2, outputPerMillion: 1.2 },
 };

@@ -183,11 +183,27 @@ describe("usage and cost", () => {
 
   it("bills cached tokens at the full input rate when no cached rate is known", () => {
     // Overstating cost is the safe direction; a made-up discount is not.
+    // Luna has no verified cached rate, so it pays full freight on every token.
     const cost = estimateCostUsd(
-      "deepseek-v4-flash",
+      "gpt-5.6-luna",
       usage({ inputTokens: 1_000_000, cachedInputTokens: 1_000_000 }),
     );
-    assert.ok(Math.abs((cost ?? 0) - 0.14) < 1e-9);
+    assert.ok(Math.abs((cost ?? 0) - 0.2) < 1e-9);
+  });
+
+  it("reproduces a real DeepSeek Flash invoice line", () => {
+    // Straight from a billing export: 32,923,776 cached input, 596,098 uncached
+    // input, and 214,144 output on 2026-08-03 invoiced at $0.2356006128. If the
+    // rate table ever drifts, this is what catches it.
+    const cost = estimateCostUsd(
+      "deepseek-v4-flash",
+      usage({
+        inputTokens: 32_923_776 + 596_098,
+        cachedInputTokens: 32_923_776,
+        outputTokens: 214_144,
+      }),
+    );
+    assert.ok(Math.abs((cost ?? 0) - 0.2356006128) < 1e-9, `got ${String(cost)}`);
   });
 
   it("clamps a cached count that exceeds the input count", () => {
