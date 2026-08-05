@@ -99,3 +99,65 @@ export async function postPullRequestComment(
 ): Promise<void> {
   await gh(["pr", "comment", pr, "--body", body], cwd);
 }
+
+/** Resolve a PR number or URL to its number, for issue-comment API calls. */
+export async function resolvePullRequestNumber(pr: string, cwd?: string): Promise<number> {
+  const raw = await gh(["pr", "view", pr, "--json", "number"], cwd);
+  const parsed: unknown = JSON.parse(raw);
+  const number =
+    typeof parsed === "object" && parsed !== null
+      ? (parsed as Record<string, unknown>).number
+      : undefined;
+  if (typeof number !== "number") throw new GhError("pr", "could not resolve PR number");
+  return number;
+}
+
+/**
+ * Post the review comment, or edit the existing one in place.
+ *
+ * A review that posts a fresh comment on every push turns an active pull
+ * request into a wall of stale reviews: four pushes, four comments, three of
+ * them describing code that no longer exists. The marker at the top of every
+ * review comment exists so this function can find its predecessor; one
+ * up-to-date comment is the whole point of re-reviewing on synchronize.
+ */
+export async function upsertPullRequestComment(input: {
+  readonly pr: string;
+  readonly marker: string;
+  readonly body: string;
+  readonly cwd?: string;
+}): Promise<"created" | "updated"> {
+  const number = await resolvePullRequestNumber(input.pr, input.cwd);
+  // Server-side filter: only matching comment ids come back, not every body.
+  const existing = await gh(
+    [
+      "api",
+      `repos/{owner}/{repo}/issues/${number}/comments?per_page=100`,
+      "--paginate",
+      "--jq",
+      `.[] | select(.body | startswith("${input.marker}")) | .id`,
+    ],
+    input.cwd,
+  );
+  const firstId = existing
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => /^\d+$/.test(line));
+
+  if (firstId !== undefined) {
+    await gh(
+      [
+        "api",
+        "-X",
+        "PATCH",
+        `repos/{owner}/{repo}/issues/comments/${firstId}`,
+        "-f",
+        `body=${input.body}`,
+      ],
+      input.cwd,
+    );
+    return "updated";
+  }
+  await gh(["pr", "comment", String(number), "--body", input.body], input.cwd);
+  return "created";
+}

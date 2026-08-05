@@ -3,9 +3,15 @@ import { readFile } from "node:fs/promises";
 
 import { parse, reportFailure, requireString } from "../src/args.ts";
 import { fetchPullRequestContext } from "../src/context.ts";
-import { fetchPullRequestDiff, postPullRequestComment } from "../src/github.ts";
+import { fetchPullRequestDiff, upsertPullRequestComment } from "../src/github.ts";
 import { estimateCostUsd, resolveReviewProvider } from "../src/provider.ts";
-import { formatReviewComment, reviewDiff, truncateDiff, MAX_DIFF_CHARACTERS } from "../src/review.ts";
+import {
+  formatReviewComment,
+  reviewDiff,
+  truncateDiff,
+  MAX_DIFF_CHARACTERS,
+  REVIEW_COMMENT_MARKER,
+} from "../src/review.ts";
 
 const USAGE = `CodeRev: review a pull request diff with a cheap model and report what survives.
 
@@ -102,8 +108,15 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  await postPullRequestComment(pr, comment, cwd);
-  console.log(`Posted ${findings.length} finding(s) to PR ${pr}.`);
+  const outcome = await upsertPullRequestComment({
+    pr,
+    marker: REVIEW_COMMENT_MARKER,
+    body: comment,
+    ...(cwd === undefined ? {} : { cwd }),
+  });
+  console.log(
+    `${outcome === "updated" ? "Updated the review comment" : "Posted a review comment"} on PR ${pr} (${findings.length} finding(s)).`,
+  );
   return 0;
 }
 
