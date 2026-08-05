@@ -6,10 +6,10 @@ import { fetchPullRequestDiff, postPullRequestComment } from "../src/github.ts";
 import { estimateCostUsd, resolveReviewProvider } from "../src/provider.ts";
 import { formatReviewComment, reviewDiff, truncateDiff, MAX_DIFF_CHARACTERS } from "../src/review.ts";
 
-const USAGE = `Review a pull request diff with a cheap model and report what survives.
+const USAGE = `CodeRev: review a pull request diff with a cheap model and report what survives.
 
 Usage:
-  review-pr --pr <number|url> [--post] [--conventions <path>] [--repo <dir>]
+  coderev --pr <number|url> [--post] [--conventions <path>] [--repo <dir>]
 
 Flags:
   --pr           Pull request number or URL to review. Required.

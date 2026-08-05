@@ -1,5 +1,5 @@
-name: Self-hosted code review
-description: Review a pull request with a cheap model behind a refutation panel.
+name: CodeRev
+description: Self-hosted PR review that runs a cheap model behind a refutation panel.
 author: tsouth89
 
 inputs:

@@ -1,4 +1,4 @@
-# code-review
+# CodeRev
 
 Self-hosted pull request review. Runs a cheap model over the diff, then puts
 every finding to a panel of independent skeptics and posts only what survives.
@@ -43,7 +43,7 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v6
-      - uses: tsouth89/code-review@v1
+      - uses: tsouth89/coderev@v1
         with:
           api-key: ${{ secrets.REVIEW_API_KEY }}
           conventions: AGENTS.md

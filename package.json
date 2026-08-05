@@ -1,16 +1,16 @@
 {
-  "name": "@tsouth89/code-review",
+  "name": "@tsouth89/coderev",
   "version": "0.1.0",
   "private": false,
-  "description": "Self-hosted pull request review that runs a cheap model behind a refutation panel.",
+  "description": "CodeRev: self-hosted pull request review that runs a cheap model behind a refutation panel.",
   "type": "module",
   "license": "MIT",
   "engines": {
     "node": ">=22.6"
   },
   "bin": {
-    "review-pr": "./bin/review-pr.ts",
-    "review-benchmark": "./bin/review-benchmark.ts"
+    "coderev": "./bin/review-pr.ts",
+    "coderev-benchmark": "./bin/review-benchmark.ts"
   },
   "scripts": {
     "review:pr": "node bin/review-pr.ts",

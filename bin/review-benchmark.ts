@@ -9,10 +9,10 @@ import {
 } from "../src/benchmark.ts";
 import { resolveReviewProvider } from "../src/provider.ts";
 
-const USAGE = `Score review models on recorded pull requests for cost and baseline agreement.
+const USAGE = `CodeRev benchmark: score review models on recorded pull requests for cost and baseline agreement.
 
 Usage:
-  review-benchmark --suite <path> [--model <name>]... [--limit <n>] [--repo <dir>]
+  coderev-benchmark --suite <path> [--model <name>]... [--limit <n>] [--repo <dir>]
 
 Flags:
   --suite  Path to a benchmark suite JSON file. Required.
@@ -21,7 +21,7 @@ Flags:
   --limit  Benchmark only the first N recorded pull requests.
   --repo   Directory of the repository the suite refers to. Defaults to the working directory.
 
-Environment: same as review-pr.
+Environment: same as coderev.
 
 Cost is measured from reported token usage, not estimated from diff size.
 Agreement with the baseline is not correctness; unmatched findings need a human read.`;

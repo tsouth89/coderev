@@ -207,7 +207,7 @@ export function truncateDiff(
   return { diff: diff.slice(0, limit), truncated: true };
 }
 
-export const REVIEW_COMMENT_MARKER = "<!-- self-hosted-code-review -->";
+export const REVIEW_COMMENT_MARKER = "<!-- coderev -->";
 
 export function formatReviewComment(input: {
   readonly findings: ReadonlyArray<ReviewFinding>;
