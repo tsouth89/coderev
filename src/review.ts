@@ -70,6 +70,15 @@ const PANEL_CONCURRENCY = 8;
  * prompts because the panel's token cost lives in the shared diff prefix.
  * Distinct system prompts would give each seat its own cache miss over the
  * whole diff; a trailing suffix keeps one miss per finding.
+ *
+ * A lens is added scrutiny, never exclusive jurisdiction. The first version
+ * read as jurisdiction, and a strictly literal model (Muse Spark) voted only
+ * its own ground — which breaks the arithmetic: each ground has exactly one
+ * seat, so a finding failing only one ground loses one vote and survives 1-2
+ * by construction. Intent-restatements became mathematically unkillable, and
+ * a claim this reviewer had hand-verified as false survived a unanimous
+ * panel. Every seat must vote every ground; the lens only says where to dig
+ * hardest.
  */
 export const REFUTE_LENSES: ReadonlyArray<string> = [
   [
