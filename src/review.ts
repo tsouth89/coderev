@@ -340,6 +340,82 @@ export function truncateDiff(
 
 export const REVIEW_COMMENT_MARKER = "<!-- coderev -->";
 
+/**
+ * Words that carry no identity: with them included, two phrasings of the same
+ * defect ("teardown hangs due to .cmd shim" / "teardown test hangs on
+ * Windows") score as different findings.
+ */
+const TITLE_STOPWORDS = new Set([
+  "a", "an", "the", "to", "on", "in", "of", "for", "due", "when", "may",
+  "can", "could", "is", "are", "and", "or", "with", "via", "because",
+]);
+
+function titleTokens(title: string): Set<string> {
+  return new Set(
+    title
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length > 0 && !TITLE_STOPWORDS.has(token)),
+  );
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 0;
+  let intersection = 0;
+  for (const token of a) if (b.has(token)) intersection += 1;
+  return intersection / (a.size + b.size - intersection);
+}
+
+/** Titles sharing at least half their meaningful words are the same concern. */
+export const DEDUPE_SIMILARITY_THRESHOLD = 0.5;
+
+export interface GroupedFinding {
+  readonly title: string;
+  readonly detail: string;
+  readonly locations: ReadonlyArray<{ readonly file: string; readonly line: number }>;
+}
+
+/**
+ * Merge findings that describe the same defect in different places.
+ *
+ * A defect in a shared helper surfaces once per call site: one benchmark run
+ * reported the same test-harness claim as three separate findings across three
+ * test files. Three near-identical bullets read as noise even when the finding
+ * is right, and noise is the one thing this tool exists to not produce. The
+ * first finding in a group keeps its title and detail (generation orders by
+ * severity, so the first phrasing is the one the model led with), and the
+ * merged locations are listed together.
+ *
+ * Grouping is greedy against each group's head rather than transitive-closure,
+ * so two findings that each half-match a middle one do not chain into a single
+ * mega-group.
+ */
+export function dedupeFindings(findings: ReadonlyArray<ReviewFinding>): Array<GroupedFinding> {
+  const groups: Array<{ head: Set<string>; grouped: GroupedFinding }> = [];
+  for (const finding of findings) {
+    const tokens = titleTokens(finding.title);
+    const existing = groups.find(
+      (group) => jaccard(group.head, tokens) >= DEDUPE_SIMILARITY_THRESHOLD,
+    );
+    if (existing) {
+      existing.grouped = {
+        ...existing.grouped,
+        locations: [...existing.grouped.locations, { file: finding.file, line: finding.line }],
+      };
+      continue;
+    }
+    groups.push({
+      head: tokens,
+      grouped: {
+        title: finding.title,
+        detail: finding.detail,
+        locations: [{ file: finding.file, line: finding.line }],
+      },
+    });
+  }
+  return groups.map((group) => group.grouped);
+}
+
 export function formatReviewComment(input: {
   readonly findings: ReadonlyArray<ReviewFinding>;
   readonly model: string;
@@ -347,14 +423,18 @@ export function formatReviewComment(input: {
 }): string {
   const lines = [REVIEW_COMMENT_MARKER, "", "### Automated review", ""];
 
-  if (input.findings.length === 0) {
+  const grouped = dedupeFindings(input.findings);
+  if (grouped.length === 0) {
     lines.push("No blocking issues found.");
   } else {
-    const noun = input.findings.length === 1 ? "issue" : "issues";
-    lines.push(`Found ${input.findings.length} ${noun}:`, "");
-    input.findings.forEach((finding, index) => {
+    const noun = grouped.length === 1 ? "issue" : "issues";
+    lines.push(`Found ${grouped.length} ${noun}:`, "");
+    grouped.forEach((finding, index) => {
       lines.push(`${index + 1}. **${finding.title}**`, "");
-      lines.push(`   \`${finding.file}\`${finding.line > 0 ? `:${finding.line}` : ""}`, "");
+      const rendered = finding.locations
+        .map((location) => `\`${location.file}\`${location.line > 0 ? `:${location.line}` : ""}`)
+        .join(", ");
+      lines.push(`   ${rendered}`, "");
       if (finding.detail.length > 0) lines.push(`   ${finding.detail}`, "");
     });
   }

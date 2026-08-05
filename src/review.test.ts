@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  dedupeFindings,
   extractJsonObject,
   formatReviewComment,
   parseFindings,
@@ -115,6 +116,39 @@ describe("truncateDiff", () => {
 
   it("flags truncation so the comment can disclose it", () => {
     assert.deepEqual(truncateDiff("abcdef", 3), { diff: "abc", truncated: true });
+  });
+});
+
+describe("dedupeFindings", () => {
+  const finding = (file: string, title: string) => ({ file, line: 10, title, detail: "d" });
+
+  it("merges the same defect reported across several files", () => {
+    // Verbatim titles from a real run: one test-harness claim posted three
+    // times across three test files.
+    const grouped = dedupeFindings([
+      finding("a.test.ts", "Windows ACP agent teardown test hangs due to .cmd shim"),
+      finding("b.test.ts", "Windows ACP agent teardown test hangs due to .cmd shim"),
+      finding("c.test.ts", "Cursor provider ACP teardown test hangs on Windows"),
+    ]);
+    assert.equal(grouped.length, 1);
+    assert.equal(grouped[0]?.locations.length, 3);
+  });
+
+  it("keeps unrelated findings apart", () => {
+    const grouped = dedupeFindings([
+      finding("a.ts", "Empty model slug produces invalid Codex config"),
+      finding("b.ts", "Web search tool type incorrectly derived from vision support"),
+    ]);
+    assert.equal(grouped.length, 2);
+  });
+
+  it("keeps the first title and detail as the group's face", () => {
+    // Generation orders by severity, so the phrasing the model led with wins.
+    const grouped = dedupeFindings([
+      { file: "a.ts", line: 1, title: "Leak on close", detail: "first" },
+      { file: "b.ts", line: 2, title: "Leak on close", detail: "second phrasing" },
+    ]);
+    assert.equal(grouped[0]?.detail, "first");
   });
 });
 
