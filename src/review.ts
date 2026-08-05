@@ -135,6 +135,14 @@ export const FIND_SYSTEM_PROMPT = [
  * toast title, a variable said to be out of scope that would not have compiled)
  * are exactly the kind that still fail this version, because a concrete reason
  * they are wrong is easy to name.
+ *
+ * The vagueness ground closes the hole that opened up with it. Demanding a
+ * specific reason to refute hands unfalsifiable claims a free pass: "other
+ * callers may silently break" survived 3-0 not because anyone verified it but
+ * because there is nothing specific to argue against. Generation is already
+ * told to name a mechanism, so without the matching ground here the two halves
+ * disagreed about what counts as a finding, and the vaguest claims sailed
+ * through the gate built to stop them.
  */
 export const REFUTE_SYSTEM_PROMPT = [
   "You are verifying a claimed code-review finding against the diff. Decide whether",
@@ -146,6 +154,9 @@ export const REFUTE_SYSTEM_PROMPT = [
   "- The issue is on lines the diff does not modify.",
   "- A linter, type checker, or compiler would already catch it.",
   "- It restates the change's intended behaviour as though it were a defect.",
+  "- It names no checkable mechanism: it asserts something 'may' break or 'could'",
+  "  be unsafe without saying which input, state, or sequence causes it. A claim",
+  "  too vague to check is too vague to act on.",
   "",
   "Do NOT refute merely because you are unsure, because the finding seems minor, or",
   "because you cannot see the rest of the codebase. Uncertainty is not refutation.",
