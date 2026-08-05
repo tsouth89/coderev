@@ -16,8 +16,24 @@
  * hardcoded value with extra steps.
  */
 
-/** Long enough for a reasoning model on a large diff; short enough to fail a hung CI job. */
-const COMPLETION_TIMEOUT_MS = 180_000;
+/**
+ * Requests stream, and the timeout is on silence rather than on total duration.
+ *
+ * Both facts come from the same measurement. A reasoning model on a 25k-token
+ * diff can spend over three minutes thinking before it emits a single token,
+ * and a non-streaming request that sends nothing for that long gets killed:
+ * DeepSeek returned ECONNRESET, and behind a proxy it would be a 504. The
+ * identical request with `stream: true` succeeded, first byte in 0.7s and done
+ * in 195s.
+ *
+ * So a total-duration timeout is the wrong instrument. It cannot tell a model
+ * that is working from one that has hung, and tuning it means picking between
+ * killing good long reviews and waiting forever on dead ones. An idle timeout
+ * measures the thing that actually matters, which is whether anything is still
+ * arriving. The total cap only exists to stop an infinite trickle.
+ */
+const COMPLETION_IDLE_TIMEOUT_MS = 120_000;
+const COMPLETION_TOTAL_TIMEOUT_MS = 900_000;
 
 export interface ReviewProviderPreset {
   readonly baseUrl: string;
@@ -289,36 +305,117 @@ export class ProviderRequestError extends Error {
   }
 }
 
-export async function requestCompletion(input: CompletionRequest): Promise<CompletionResult> {
-  const response = await fetch(joinUrl(input.provider.baseUrl, "chat/completions"), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${input.provider.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: input.provider.model,
-      temperature: input.temperature,
-      messages: [
-        { role: "system", content: input.systemPrompt },
-        { role: "user", content: input.userPrompt },
-      ],
-    }),
-    signal: AbortSignal.timeout(COMPLETION_TIMEOUT_MS),
-  }).catch((cause: unknown) => {
-    throw new ProviderRequestError(cause instanceof Error ? cause.message : String(cause));
-  });
+/**
+ * Fold one server-sent-events line into the accumulating result.
+ *
+ * Exported for tests: stream assembly is the part most likely to break against
+ * a provider that formats its chunks slightly differently, and it is not worth
+ * a live API call to check.
+ */
+export function applyStreamLine(
+  line: string,
+  state: { content: string; usage: TokenUsage },
+): void {
+  if (!line.startsWith("data:")) return;
+  const payload = line.slice(5).trim();
+  if (payload.length === 0 || payload === "[DONE]") return;
 
-  if (!response.ok) {
-    // Body often carries the actual reason (bad key, unknown model, no credit),
-    // and losing it turns every failure into an opaque status code.
-    const detail = await response.text().catch(() => "");
-    throw new ProviderRequestError(`HTTP ${response.status} ${detail.slice(0, 300)}`);
+  let chunk: unknown;
+  try {
+    chunk = JSON.parse(payload);
+  } catch {
+    // A malformed chunk mid-stream is not worth discarding a whole review over.
+    return;
+  }
+  if (typeof chunk !== "object" || chunk === null) return;
+  const record = chunk as Record<string, unknown>;
+
+  const choices = record.choices;
+  if (Array.isArray(choices) && choices.length > 0) {
+    const first = choices[0];
+    if (typeof first === "object" && first !== null) {
+      const delta = (first as Record<string, unknown>).delta;
+      if (typeof delta === "object" && delta !== null) {
+        const piece = (delta as Record<string, unknown>).content;
+        if (typeof piece === "string") state.content += piece;
+      }
+    }
   }
 
-  const body: unknown = await response.json().catch((cause: unknown) => {
-    throw new ProviderRequestError(`invalid JSON: ${String(cause)}`);
-  });
+  // Usage arrives on its own final chunk when the provider supports
+  // stream_options.include_usage. Providers that ignore it leave usage
+  // unreported, which surfaces as an unknown cost rather than a free one.
+  if (record.usage !== undefined && record.usage !== null) {
+    state.usage = parseUsage(record);
+  }
+}
 
-  return { content: parseContent(body), usage: parseUsage(body) };
+export async function requestCompletion(input: CompletionRequest): Promise<CompletionResult> {
+  const controller = new AbortController();
+  const total = setTimeout(() => controller.abort(), COMPLETION_TOTAL_TIMEOUT_MS);
+  let idle: NodeJS.Timeout | undefined;
+  const touch = () => {
+    clearTimeout(idle);
+    idle = setTimeout(() => controller.abort(), COMPLETION_IDLE_TIMEOUT_MS);
+  };
+
+  try {
+    touch();
+    const response = await fetch(joinUrl(input.provider.baseUrl, "chat/completions"), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${input.provider.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: input.provider.model,
+        temperature: input.temperature,
+        stream: true,
+        stream_options: { include_usage: true },
+        messages: [
+          { role: "system", content: input.systemPrompt },
+          { role: "user", content: input.userPrompt },
+        ],
+      }),
+      signal: controller.signal,
+    }).catch((cause: unknown) => {
+      throw new ProviderRequestError(cause instanceof Error ? cause.message : String(cause));
+    });
+
+    if (!response.ok) {
+      // Body often carries the actual reason (bad key, unknown model, no
+      // credit), and losing it turns every failure into an opaque status code.
+      const detail = await response.text().catch(() => "");
+      throw new ProviderRequestError(`HTTP ${response.status} ${detail.slice(0, 300)}`);
+    }
+    if (response.body === null) throw new ProviderRequestError("response had no body");
+
+    const state = { content: "", usage: EMPTY_USAGE };
+    const decoder = new TextDecoder();
+    let buffered = "";
+
+    try {
+      for await (const part of response.body) {
+        touch();
+        buffered += decoder.decode(part as Uint8Array, { stream: true });
+        const lines = buffered.split("\n");
+        // The trailing element is whatever arrived after the last newline, so
+        // it is an incomplete line and must wait for the next chunk.
+        buffered = lines.pop() ?? "";
+        for (const line of lines) applyStreamLine(line, state);
+      }
+    } catch (cause) {
+      throw new ProviderRequestError(
+        controller.signal.aborted
+          ? `stream stalled for ${COMPLETION_IDLE_TIMEOUT_MS}ms`
+          : `stream failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+    applyStreamLine(buffered, state);
+
+    return { content: state.content, usage: state.usage };
+  } finally {
+    clearTimeout(total);
+    clearTimeout(idle);
+  }
 }

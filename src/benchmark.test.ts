@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 
 import {
+  formatBenchmarkReport,
   LINE_MATCH_TOLERANCE,
   matchesBaseline,
   parseBenchmarkSuite,
@@ -68,7 +69,57 @@ describe("scoreCase", () => {
   it("scores an empty review as zero rather than as a failure", () => {
     // Reporting nothing is a legitimate outcome, not an error condition.
     const score = scoreCase({ benchmarkCase, findings: [], candidates: 0, usage: EMPTY_USAGE });
-    assert.partialDeepStrictEqual(score, { reported: 0, matched: 0, unmatched: 0 });
+    assert.partialDeepStrictEqual(score, { reported: 0, matched: 0, unmatched: 0, failed: false });
+  });
+
+  it("distinguishes a review that failed from one that found nothing", () => {
+    // Both produce an empty findings list. Conflating them makes an
+    // infrastructure failure read as a clean result, which is the single most
+    // misleading thing this tool could do.
+    const clean = scoreCase({ benchmarkCase, findings: [], candidates: 0, usage: EMPTY_USAGE });
+    const broken = scoreCase({
+      benchmarkCase,
+      findings: [],
+      candidates: 0,
+      usage: EMPTY_USAGE,
+      failed: true,
+    });
+    assert.equal(clean.failed, false);
+    assert.equal(broken.failed, true);
+  });
+});
+
+describe("formatBenchmarkReport", () => {
+  const suite = {
+    repo: "r",
+    baselineReviewer: "Baseline",
+    capturedAt: "2026-08-05",
+    cases: [],
+  };
+  const caseScore = (failed: boolean) =>
+    scoreCase({
+      benchmarkCase: { pr: 1, actedOn: true, baseline: BASELINE },
+      findings: [],
+      candidates: 0,
+      usage: EMPTY_USAGE,
+      failed,
+    });
+
+  it("warns prominently when reviews failed to run", () => {
+    const report = formatBenchmarkReport(suite, [
+      { model: "m", cases: [caseScore(true), caseScore(false)], usage: EMPTY_USAGE, costUsd: 1 },
+    ]);
+    assert.match(report, /1 of 2 reviews failed to run/);
+    // Per-PR cost must divide by completed runs, not attempted ones, or a
+    // failure would make the model look half price.
+    assert.match(report, /\$1\.0000 per PR/);
+  });
+
+  it("says nothing about failures when there were none", () => {
+    const report = formatBenchmarkReport(suite, [
+      { model: "m", cases: [caseScore(false)], usage: EMPTY_USAGE, costUsd: 1 },
+    ]);
+    assert.doesNotMatch(report, /failed to run/);
   });
 });
 

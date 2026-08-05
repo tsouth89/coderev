@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   addUsage,
+  applyStreamLine,
   DEFAULT_REVIEW_PROVIDER,
   EMPTY_USAGE,
   estimateCostUsd,
@@ -130,6 +131,57 @@ describe("response parsing", () => {
 
   it("marks usage unreported when the provider omits it", () => {
     assert.equal(parseUsage({ choices: [] }).reported, false);
+  });
+});
+
+describe("applyStreamLine", () => {
+  const fresh = () => ({ content: "", usage: EMPTY_USAGE });
+
+  it("accumulates content deltas in order", () => {
+    const state = fresh();
+    applyStreamLine('data: {"choices":[{"delta":{"content":"he"}}]}', state);
+    applyStreamLine('data: {"choices":[{"delta":{"content":"llo"}}]}', state);
+    assert.equal(state.content, "hello");
+  });
+
+  it("ignores the terminator and blank lines", () => {
+    const state = fresh();
+    applyStreamLine("data: [DONE]", state);
+    applyStreamLine("", state);
+    applyStreamLine(":heartbeat", state);
+    assert.equal(state.content, "");
+  });
+
+  it("survives a malformed chunk mid-stream", () => {
+    // One bad chunk must not discard a review that is otherwise fine.
+    const state = fresh();
+    applyStreamLine('data: {"choices":[{"delta":{"content":"a"}}]}', state);
+    applyStreamLine("data: {not json", state);
+    applyStreamLine('data: {"choices":[{"delta":{"content":"b"}}]}', state);
+    assert.equal(state.content, "ab");
+  });
+
+  it("picks up usage from the final chunk", () => {
+    const state = fresh();
+    applyStreamLine('data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2}}', state);
+    assert.partialDeepStrictEqual(state.usage, {
+      inputTokens: 10,
+      outputTokens: 2,
+      reported: true,
+    });
+  });
+
+  it("leaves usage unreported when the provider never sends it", () => {
+    // Costs as unknown rather than free.
+    const state = fresh();
+    applyStreamLine('data: {"choices":[{"delta":{"content":"x"}}]}', state);
+    assert.equal(state.usage.reported, false);
+  });
+
+  it("ignores a delta with no content, such as a role-only opener", () => {
+    const state = fresh();
+    applyStreamLine('data: {"choices":[{"delta":{"role":"assistant"}}]}', state);
+    assert.equal(state.content, "");
   });
 });
 

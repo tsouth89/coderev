@@ -66,7 +66,7 @@ async function main(): Promise<number> {
       : null;
 
   console.log(`Reviewing PR ${pr} with ${provider.model}...`);
-  const { findings, usage } = await reviewDiff({
+  const { findings, usage, generationError } = await reviewDiff({
     diff,
     conventions,
     provider,
@@ -78,6 +78,14 @@ async function main(): Promise<number> {
     `Tokens: ${usage.inputTokens} in (${usage.cachedInputTokens} cached), ${usage.outputTokens} out` +
       (cost === null ? "" : ` (~$${cost.toFixed(4)})`),
   );
+
+  // A failed review must never be posted or reported as a pass. Silence is the
+  // only honest output here: an empty findings list from a review that never
+  // ran is indistinguishable from a clean one, and posting it would put a
+  // false all-clear on the pull request.
+  if (generationError !== null) {
+    throw new Error(`Review did not run: ${generationError}`);
+  }
 
   const comment = formatReviewComment({ findings, model: provider.model, truncated });
   if (values.post !== true) {

@@ -308,6 +308,19 @@ export interface DiffReviewResult {
   readonly findings: ReadonlyArray<ReviewFinding>;
   readonly adjudicated: ReadonlyArray<AdjudicatedFinding>;
   readonly usage: TokenUsage;
+  /**
+   * Why generation failed, or null if it ran.
+   *
+   * This exists because "the model found nothing" and "the model never
+   * answered" both produce an empty findings list, and reporting the second as
+   * the first is the worst failure this tool has. A clean bill of health on a
+   * pull request nobody reviewed is actively misleading, and it is exactly
+   * what happened the first time this ran against a real diff: the request was
+   * killed mid-flight and the comment read "No blocking issues found."
+   *
+   * Callers must check this before presenting an empty result as good news.
+   */
+  readonly generationError: string | null;
 }
 
 /**
@@ -326,6 +339,7 @@ export async function reviewDiff(input: {
   const note = input.onProgress ?? (() => {});
 
   let found = { content: "", usage: EMPTY_USAGE };
+  let generationError: string | null = null;
   try {
     found = await requestCompletion({
       provider: input.provider,
@@ -334,7 +348,15 @@ export async function reviewDiff(input: {
       temperature: FIND_TEMPERATURE,
     });
   } catch (cause) {
-    note(`Generation failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    generationError = cause instanceof Error ? cause.message : String(cause);
+    note(`Generation failed: ${generationError}`);
+    return {
+      candidates: [],
+      findings: [],
+      adjudicated: [],
+      usage: EMPTY_USAGE,
+      generationError,
+    };
   }
 
   const candidates = parseFindings(found.content);
@@ -356,5 +378,6 @@ export async function reviewDiff(input: {
     findings: adjudicated.filter((entry) => entry.survived).map((entry) => entry.finding),
     adjudicated,
     usage: adjudicated.reduce((total, entry) => addUsage(total, entry.usage), found.usage),
+    generationError: null,
   };
 }

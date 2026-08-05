@@ -125,6 +125,12 @@ export interface CaseScore {
   readonly unmatched: number;
   readonly candidates: number;
   readonly usage: TokenUsage;
+  /**
+   * Set when the review never ran. Such a case contributes no findings, so
+   * leaving it in the totals would quietly depress the model's apparent
+   * agreement and make an infrastructure failure look like a quality result.
+   */
+  readonly failed: boolean;
 }
 
 export interface ModelScore {
@@ -147,6 +153,7 @@ export function scoreCase(input: {
   readonly findings: ReadonlyArray<{ readonly file: string; readonly line: number }>;
   readonly candidates: number;
   readonly usage: TokenUsage;
+  readonly failed?: boolean;
 }): CaseScore {
   const matched = input.findings.filter((finding) =>
     matchesBaseline(finding, input.benchmarkCase.baseline),
@@ -160,6 +167,7 @@ export function scoreCase(input: {
     unmatched: input.findings.length - matched,
     candidates: input.candidates,
     usage: input.usage,
+    failed: input.failed === true,
   };
 }
 
@@ -179,18 +187,27 @@ export function formatBenchmarkReport(
     const sum = (pick: (entry: CaseScore) => number) => score.cases.reduce((a, e) => a + pick(e), 0);
     const reported = sum((e) => e.reported);
     const matched = sum((e) => e.matched);
+    const failed = score.cases.filter((entry) => entry.failed).length;
+    const scored = score.cases.length - failed;
     const actedOnMatched = score.cases
       .filter((entry) => entry.actedOn)
       .reduce((a, e) => a + e.matched, 0);
     const perPr =
-      score.costUsd === null || score.cases.length === 0
+      score.costUsd === null || scored === 0
         ? "unknown"
-        : `$${(score.costUsd / score.cases.length).toFixed(4)}`;
+        : `$${(score.costUsd / scored).toFixed(4)}`;
 
     lines.push(
       `### ${score.model}`,
       "",
-      `- Cost: ${score.costUsd === null ? "unknown (provider reported no usage)" : `$${score.costUsd.toFixed(4)}`} across ${score.cases.length} PR(s), ${perPr} per PR`,
+      ...(failed > 0
+        ? [
+            `> **${failed} of ${score.cases.length} reviews failed to run.** Those are excluded`,
+            `> from the rates below; the numbers describe the ${scored} that completed.`,
+            "",
+          ]
+        : []),
+      `- Cost: ${score.costUsd === null ? "unknown (provider reported no usage)" : `$${score.costUsd.toFixed(4)}`} across ${scored} completed PR(s), ${perPr} per PR`,
       `- Tokens: ${score.usage.inputTokens} in (${score.usage.cachedInputTokens} cached), ${score.usage.outputTokens} out`,
       `- Findings: ${sum((e) => e.candidates)} generated, ${reported} survived the panel`,
       `- Agreement: ${matched}/${reported} reported findings match the baseline (${sum((e) => e.baselineCount)} baseline findings total)`,
@@ -202,7 +219,9 @@ export function formatBenchmarkReport(
     );
     for (const entry of score.cases) {
       lines.push(
-        `| ${entry.pr} | ${entry.actedOn ? "yes" : "no"} | ${entry.baselineCount} | ${entry.candidates} | ${entry.reported} | ${entry.matched} |`,
+        entry.failed
+          ? `| ${entry.pr} | ${entry.actedOn ? "yes" : "no"} | ${entry.baselineCount} | _failed_ | _failed_ | _failed_ |`
+          : `| ${entry.pr} | ${entry.actedOn ? "yes" : "no"} | ${entry.baselineCount} | ${entry.candidates} | ${entry.reported} | ${entry.matched} |`,
       );
     }
     lines.push("");
@@ -248,12 +267,16 @@ export async function runBenchmark(input: {
         conventions: null,
         provider,
       });
+      if (result.generationError !== null) {
+        note(`  FAILED: ${result.generationError}`);
+      }
       caseScores.push(
         scoreCase({
           benchmarkCase,
           findings: result.findings,
           candidates: result.candidates.length,
           usage: result.usage,
+          failed: result.generationError !== null,
         }),
       );
     }
