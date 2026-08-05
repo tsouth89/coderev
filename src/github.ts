@@ -92,14 +92,6 @@ export async function fetchFileAtRef(
   }
 }
 
-export async function postPullRequestComment(
-  pr: string,
-  body: string,
-  cwd?: string,
-): Promise<void> {
-  await gh(["pr", "comment", pr, "--body", body], cwd);
-}
-
 /** Resolve a PR number or URL to its number, for issue-comment API calls. */
 export async function resolvePullRequestNumber(pr: string, cwd?: string): Promise<number> {
   const raw = await gh(["pr", "view", pr, "--json", "number"], cwd);
