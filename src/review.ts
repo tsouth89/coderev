@@ -523,7 +523,8 @@ export async function reviewDiff(input: {
   for (const entry of adjudicated) {
     const refuted = entry.verdicts.filter((verdict) => verdict.refuted).length;
     note(
-      `  ${entry.survived ? "KEEP" : "DROP"} (${refuted}/${entry.verdicts.length} refuted) ${entry.finding.title}`,
+      `  ${entry.survived ? "KEEP" : "DROP"} (${refuted}/${entry.verdicts.length} refuted) ` +
+        `${entry.finding.file}:${entry.finding.line} ${entry.finding.title}`,
     );
     // The stated reason is the only way to tell a panel that is discriminating
     // from one that is merely suppressing. Without it, a run of DROPs looks the
