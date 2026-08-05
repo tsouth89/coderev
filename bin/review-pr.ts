@@ -1,0 +1,93 @@
+#!/usr/bin/env node
+import { readFile } from "node:fs/promises";
+
+import { parse, reportFailure, requireString } from "../src/args.ts";
+import { fetchPullRequestDiff, postPullRequestComment } from "../src/github.ts";
+import { estimateCostUsd, resolveReviewProvider } from "../src/provider.ts";
+import { formatReviewComment, reviewDiff, truncateDiff, MAX_DIFF_CHARACTERS } from "../src/review.ts";
+
+const USAGE = `Review a pull request diff with a cheap model and report what survives.
+
+Usage:
+  review-pr --pr <number|url> [--post] [--conventions <path>] [--repo <dir>]
+
+Flags:
+  --pr           Pull request number or URL to review. Required.
+  --post         Post the review as a PR comment instead of printing it.
+  --conventions  Path to a conventions file to include in the prompt (e.g. AGENTS.md).
+  --repo         Directory of the repository to review. Defaults to the working directory.
+
+Environment:
+  REVIEW_API_KEY       Model API key. Falls back to the provider's own variable.
+  REVIEW_PROVIDER      deepseek (default), openrouter, openai.
+  REVIEW_MODEL         Overrides the provider's default model.
+  REVIEW_API_BASE_URL  Overrides the base URL for any OpenAI-compatible endpoint.`;
+
+async function main(): Promise<number> {
+  const { values, help } = parse({
+    argv: process.argv.slice(2),
+    options: {
+      pr: { type: "string" },
+      post: { type: "boolean", default: false },
+      conventions: { type: "string" },
+      repo: { type: "string" },
+    },
+    usage: USAGE,
+  });
+
+  if (help) {
+    console.log(USAGE);
+    return 0;
+  }
+
+  const pr = requireString(values, "pr", USAGE);
+  const cwd = typeof values.repo === "string" ? values.repo : undefined;
+
+  const resolution = resolveReviewProvider(process.env);
+  if (!resolution.ok) throw new Error(resolution.reason);
+  const provider = resolution.provider;
+
+  const rawDiff = await fetchPullRequestDiff(pr, cwd);
+  if (rawDiff.trim().length === 0) {
+    console.log("Empty diff; nothing to review.");
+    return 0;
+  }
+
+  const { diff, truncated } = truncateDiff(rawDiff);
+  if (truncated) console.warn(`Diff truncated to ${MAX_DIFF_CHARACTERS} characters.`);
+
+  const conventions =
+    typeof values.conventions === "string"
+      ? await readFile(values.conventions, "utf8").catch(() => {
+          // A missing conventions file weakens the review but must not fail it.
+          console.warn(`Could not read ${String(values.conventions)}; continuing without it.`);
+          return null;
+        })
+      : null;
+
+  console.log(`Reviewing PR ${pr} with ${provider.model}...`);
+  const { findings, usage } = await reviewDiff({
+    diff,
+    conventions,
+    provider,
+    onProgress: (message) => console.log(message),
+  });
+
+  const cost = estimateCostUsd(provider.model, usage, process.env);
+  console.log(
+    `Tokens: ${usage.inputTokens} in (${usage.cachedInputTokens} cached), ${usage.outputTokens} out` +
+      (cost === null ? "" : ` (~$${cost.toFixed(4)})`),
+  );
+
+  const comment = formatReviewComment({ findings, model: provider.model, truncated });
+  if (values.post !== true) {
+    console.log(`\n${comment}`);
+    return 0;
+  }
+
+  await postPullRequestComment(pr, comment, cwd);
+  console.log(`Posted ${findings.length} finding(s) to PR ${pr}.`);
+  return 0;
+}
+
+process.exitCode = await main().catch(reportFailure);

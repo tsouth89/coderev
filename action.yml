@@ -1,0 +1,58 @@
+name: Self-hosted code review
+description: Review a pull request with a cheap model behind a refutation panel.
+author: tsouth89
+
+inputs:
+  pr:
+    description: Pull request number to review. Defaults to the one that triggered the workflow.
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  api-key:
+    description: Model API key. Pass a secret, never a literal.
+    required: true
+  provider:
+    description: deepseek (default), openrouter, or openai.
+    required: false
+    default: deepseek
+  model:
+    description: Overrides the provider's default model.
+    required: false
+    default: ""
+  base-url:
+    description: Overrides the base URL for any OpenAI-compatible endpoint.
+    required: false
+    default: ""
+  conventions:
+    description: Path to a conventions file to include in the prompt, for example AGENTS.md.
+    required: false
+    default: ""
+  post:
+    description: Post the review as a PR comment. Set false to print it to the log only.
+    required: false
+    default: "true"
+  github-token:
+    description: Token used for reading the diff and posting the comment.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node
+      uses: actions/setup-node@v6
+      with:
+        node-version: 24
+
+    - name: Review
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REVIEW_API_KEY: ${{ inputs.api-key }}
+        REVIEW_PROVIDER: ${{ inputs.provider }}
+        REVIEW_MODEL: ${{ inputs.model }}
+        REVIEW_API_BASE_URL: ${{ inputs.base-url }}
+      run: |
+        args=(--pr "${{ inputs.pr }}")
+        [[ "${{ inputs.post }}" == "true" ]] && args+=(--post)
+        [[ -n "${{ inputs.conventions }}" ]] && args+=(--conventions "${{ inputs.conventions }}")
+        node "${{ github.action_path }}/bin/review-pr.ts" "${args[@]}"

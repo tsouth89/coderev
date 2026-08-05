@@ -1,0 +1,30 @@
+{
+  "name": "@tsouth89/code-review",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Self-hosted pull request review that runs a cheap model behind a refutation panel.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "bin": {
+    "review-pr": "./bin/review-pr.ts",
+    "review-benchmark": "./bin/review-benchmark.ts"
+  },
+  "scripts": {
+    "review:pr": "node bin/review-pr.ts",
+    "review:benchmark": "node bin/review-benchmark.ts",
+    "test": "node --test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2"
+  },
+  "files": [
+    "bin",
+    "src",
+    "action.yml"
+  ]
+}

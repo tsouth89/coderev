@@ -1,0 +1,86 @@
+{
+  "repo": "tsouth89/toolport-studio",
+  "baselineReviewer": "CodeRabbit",
+  "capturedAt": "2026-08-05",
+  "notes": "The last ten merged PRs carrying any CodeRabbit inline finding. Ten is not a sample size chosen for statistical comfort, it is every such PR in roughly seventy merges, because CodeRabbit runs on profile:chill here and stays quiet on most changes. Four of these (72, 52, 36, 27) merged with no commit after the review at all, so those findings were judged not worth acting on; actedOn records that. A challenger finding that matches nothing here is unmatched, not wrong: the known example is the polynomial ReDoS in the pattern on PR 95, which CodeQL caught and CodeRabbit did not.",
+  "cases": [
+    {
+      "pr": 95,
+      "actedOn": true,
+      "baseline": [
+        { "file": "apps/desktop/src/backend/DesktopBackendManager.test.ts", "line": 117 },
+        { "file": "apps/desktop/src/backend/DesktopBackendProcessLedger.ts", "line": 174 },
+        { "file": "apps/server/src/diagnostics/ProcessDiagnostics.ts", "line": 552 },
+        { "file": "scripts/dismiss-vendored-alerts.ts", "line": 186 }
+      ]
+    },
+    {
+      "pr": 88,
+      "actedOn": true,
+      "baseline": [{ "file": "apps/web/src/components/settings/SettingsPanels.tsx", "line": 684 }]
+    },
+    {
+      "pr": 84,
+      "actedOn": true,
+      "baseline": [
+        { "file": "apps/server/src/provider/Drivers/Byok/byokApiKeyProbe.test.ts", "line": 22 },
+        { "file": "apps/server/src/provider/Drivers/Byok/byokModelCatalog.test.ts", "line": 8 },
+        { "file": "apps/server/src/provider/Drivers/Byok/byokPresets.ts", "line": 189 },
+        { "file": "docs/providers/claude.md", "line": 96 }
+      ]
+    },
+    {
+      "pr": 82,
+      "actedOn": true,
+      "baseline": [
+        { "file": "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts", "line": 1936 },
+        { "file": "apps/server/src/persistence/Services/ProjectionSidebarFolders.ts", "line": 26 },
+        { "file": "apps/server/src/persistence/Services/ProjectionThreads.ts", "line": 30 },
+        { "file": "apps/server/src/relay/AgentAwarenessRelay.ts", "line": 411 },
+        { "file": "apps/web/src/components/ChatView.tsx", "line": 713 },
+        { "file": "apps/web/src/components/ChatView.tsx", "line": 1724 },
+        { "file": "apps/web/src/components/ChatView.tsx", "line": 1739 },
+        { "file": "apps/web/src/components/ChatView.tsx", "line": 6169 }
+      ]
+    },
+    {
+      "pr": 72,
+      "actedOn": false,
+      "baseline": [
+        { "file": "apps/server/src/provider/acp/AcpAdapterSupport.ts", "line": 100 },
+        { "file": "packages/effect-codex-app-server/src/client.ts", "line": 166 }
+      ]
+    },
+    {
+      "pr": 63,
+      "actedOn": true,
+      "baseline": [{ "file": "apps/web/src/components/chat/ChatComposer.tsx", "line": 2843 }]
+    },
+    {
+      "pr": 60,
+      "actedOn": true,
+      "baseline": [
+        { "file": "apps/server/src/provider/Drivers/Byok/ByokDriver.test.ts", "line": 93 },
+        { "file": "apps/server/src/provider/Drivers/Byok/byokPresets.test.ts", "line": 45 },
+        { "file": "apps/web/src/components/chat/ChatComposer.tsx", "line": 1960 },
+        { "file": "apps/web/src/components/settings/AddProviderInstanceDialog.tsx", "line": 193 },
+        { "file": "apps/web/src/providerInstances.ts", "line": 218 }
+      ]
+    },
+    {
+      "pr": 52,
+      "actedOn": false,
+      "baseline": [{ "file": "apps/server/src/testing/fakeProviderCli.ts", "line": 219 }]
+    },
+    {
+      "pr": 36,
+      "actedOn": false,
+      "baseline": [{ "file": "apps/web/src/components/chat/ModelPickerContent.tsx", "line": 539 }]
+    },
+    {
+      "pr": 27,
+      "actedOn": false,
+      "baseline": [{ "file": "apps/web/src/components/ChatView.tsx", "line": 1209 }]
+    }
+  ]
+}
