@@ -539,6 +539,7 @@ ${input.lens}`,
 async function runPanel(input: {
   readonly candidates: ReadonlyArray<ReviewFinding>;
   readonly diff: string;
+  /** The panel's provider — may differ from the generator's. */
   readonly provider: ResolvedReviewProvider;
   readonly onProgress: (message: string) => void;
 }): Promise<ReadonlyArray<AdjudicatedFinding>> {
@@ -584,6 +585,13 @@ export interface DiffReviewResult {
   readonly adjudicated: ReadonlyArray<AdjudicatedFinding>;
   readonly usage: TokenUsage;
   /**
+   * Usage split by stage. With hybrid routing the two stages bill at different
+   * models' rates, so a single total priced at one model's rate would be
+   * quietly wrong in whichever direction the rates differ.
+   */
+  readonly findUsage: TokenUsage;
+  readonly panelUsage: TokenUsage;
+  /**
    * Why generation failed, or null if it ran.
    *
    * This exists because "the model found nothing" and "the model never
@@ -611,6 +619,13 @@ export async function reviewDiff(input: {
   /** Full changed-file contents; find-stage only. See src/context.ts. */
   readonly context?: string | null;
   readonly provider: ResolvedReviewProvider;
+  /**
+   * Provider for the refutation panel; defaults to `provider`. Split because
+   * the stages have opposite economics and failure modes: the strongest
+   * generator measured had the most lenient panel, and the panel's 3N re-sent
+   * diffs are nearly free only under aggressive cache pricing.
+   */
+  readonly refuteProvider?: ResolvedReviewProvider;
   readonly onProgress?: (message: string) => void;
 }): Promise<DiffReviewResult> {
   const note = input.onProgress ?? (() => {});
@@ -637,6 +652,8 @@ export async function reviewDiff(input: {
       findings: [],
       adjudicated: [],
       usage: EMPTY_USAGE,
+      findUsage: EMPTY_USAGE,
+      panelUsage: EMPTY_USAGE,
       generationError,
     };
   }
@@ -647,7 +664,7 @@ export async function reviewDiff(input: {
   const adjudicated = await runPanel({
     candidates,
     diff: input.diff,
-    provider: input.provider,
+    provider: input.refuteProvider ?? input.provider,
     onProgress: note,
   });
 
@@ -666,11 +683,18 @@ export async function reviewDiff(input: {
     }
   }
 
+  const panelSeed: TokenUsage = { ...EMPTY_USAGE, reported: true };
+  const panelUsage = adjudicated.reduce<TokenUsage>(
+    (total, entry) => addUsage(total, entry.usage),
+    panelSeed,
+  );
   return {
     candidates,
     findings: adjudicated.filter((entry) => entry.survived).map((entry) => entry.finding),
     adjudicated,
-    usage: adjudicated.reduce((total, entry) => addUsage(total, entry.usage), found.usage),
+    usage: addUsage(found.usage, panelUsage),
+    findUsage: found.usage,
+    panelUsage,
     generationError: null,
   };
 }

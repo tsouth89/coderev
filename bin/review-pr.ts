@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { parse, reportFailure, requireString } from "../src/args.ts";
 import { fetchPullRequestContext } from "../src/context.ts";
 import { fetchPullRequestDiff, upsertPullRequestComment } from "../src/github.ts";
-import { estimateCostUsd, resolveReviewProvider } from "../src/provider.ts";
+import { estimateCostUsd, resolveRefuteProvider, resolveReviewProvider } from "../src/provider.ts";
 import {
   formatReviewComment,
   reviewDiff,
@@ -29,7 +29,11 @@ Environment:
   REVIEW_API_KEY       Model API key. Falls back to the provider's own variable.
   REVIEW_PROVIDER      deepseek (default), openrouter, openai.
   REVIEW_MODEL         Overrides the provider's default model.
-  REVIEW_API_BASE_URL  Overrides the base URL for any OpenAI-compatible endpoint.`;
+  REVIEW_API_BASE_URL  Overrides the base URL for any OpenAI-compatible endpoint.
+
+  REVIEW_REFUTE_PROVIDER / REVIEW_REFUTE_MODEL / REVIEW_REFUTE_API_KEY
+                       Route the refutation panel to a different provider than
+                       generation (hybrid mode). Unset = same provider.`;
 
 async function main(): Promise<number> {
   const { values, help } = parse({
@@ -56,6 +60,10 @@ async function main(): Promise<number> {
   if (!resolution.ok) throw new Error(resolution.reason);
   const provider = resolution.provider;
 
+  const refuteResolution = resolveRefuteProvider(process.env);
+  if (refuteResolution !== null && !refuteResolution.ok) throw new Error(refuteResolution.reason);
+  const refuteProvider = refuteResolution?.ok ? refuteResolution.provider : undefined;
+
   const rawDiff = await fetchPullRequestDiff(pr, cwd);
   if (rawDiff.trim().length === 0) {
     console.log("Empty diff; nothing to review.");
@@ -79,16 +87,25 @@ async function main(): Promise<number> {
       ? await fetchPullRequestContext(pr, cwd, (message) => console.log(message))
       : null;
 
-  console.log(`Reviewing PR ${pr} with ${provider.model}...`);
-  const { findings, usage, generationError } = await reviewDiff({
+  console.log(
+    `Reviewing PR ${pr} with ${provider.model}` +
+      (refuteProvider ? ` (panel: ${refuteProvider.model})` : "") +
+      "...",
+  );
+  const { findings, usage, findUsage, panelUsage, generationError } = await reviewDiff({
     diff,
     conventions,
     context,
     provider,
+    ...(refuteProvider ? { refuteProvider } : {}),
     onProgress: (message) => console.log(message),
   });
 
-  const cost = estimateCostUsd(provider.model, usage, process.env);
+  // With hybrid routing the stages bill at different rates; summing per-stage
+  // estimates is the only honest total. Either stage unknown -> total unknown.
+  const findCost = estimateCostUsd(provider.model, findUsage, process.env);
+  const panelCost = estimateCostUsd((refuteProvider ?? provider).model, panelUsage, process.env);
+  const cost = findCost === null || panelCost === null ? null : findCost + panelCost;
   console.log(
     `Tokens: ${usage.inputTokens} in (${usage.cachedInputTokens} cached), ${usage.outputTokens} out` +
       (cost === null ? "" : ` (~$${cost.toFixed(4)})`),

@@ -133,6 +133,8 @@ export interface CaseScore {
   readonly unmatched: number;
   readonly candidates: number;
   readonly usage: TokenUsage;
+  readonly findUsage: TokenUsage;
+  readonly panelUsage: TokenUsage;
   /**
    * Set when the review never ran. Such a case contributes no findings, so
    * leaving it in the totals would quietly depress the model's apparent
@@ -161,6 +163,8 @@ export function scoreCase(input: {
   readonly findings: ReadonlyArray<{ readonly file: string; readonly line: number }>;
   readonly candidates: number;
   readonly usage: TokenUsage;
+  readonly findUsage?: TokenUsage;
+  readonly panelUsage?: TokenUsage;
   readonly failed?: boolean;
 }): CaseScore {
   const matched = input.findings.filter((finding) =>
@@ -175,6 +179,8 @@ export function scoreCase(input: {
     unmatched: input.findings.length - matched,
     candidates: input.candidates,
     usage: input.usage,
+    findUsage: input.findUsage ?? input.usage,
+    panelUsage: input.panelUsage ?? EMPTY_USAGE,
     failed: input.failed === true,
   };
 }
@@ -245,6 +251,8 @@ export function formatBenchmarkReport(
 export async function runBenchmark(input: {
   readonly suite: BenchmarkSuite;
   readonly baseProvider: ResolvedReviewProvider;
+  /** Panel provider for hybrid mode; the panel stays fixed while --model varies generation. */
+  readonly refuteProvider?: ResolvedReviewProvider;
   readonly models: ReadonlyArray<string>;
   readonly limit: number;
   /** Fetch full changed-file contents and feed them to the find stage. */
@@ -313,6 +321,7 @@ export async function runBenchmark(input: {
         conventions: null,
         context: contexts.get(benchmarkCase.pr) ?? null,
         provider,
+        ...(input.refuteProvider ? { refuteProvider: input.refuteProvider } : {}),
         // Without this a review is four silent minutes, and a ten-PR run looks
         // indistinguishable from a hang.
         onProgress: (message) => note(`  ${message}`),
@@ -336,20 +345,29 @@ export async function runBenchmark(input: {
           findings: result.findings,
           candidates: result.candidates.length,
           usage: result.usage,
+          findUsage: result.findUsage,
+          panelUsage: result.panelUsage,
           failed: result.generationError !== null,
         }),
       );
     }
 
-    const usage = caseScores.reduce((total, entry) => addUsage(total, entry.usage), {
-      ...EMPTY_USAGE,
-      reported: true,
-    });
+    const seed: TokenUsage = { ...EMPTY_USAGE, reported: true };
+    const usage = caseScores.reduce((total, entry) => addUsage(total, entry.usage), seed);
+    const findTotal = caseScores.reduce((total, entry) => addUsage(total, entry.findUsage), seed);
+    const panelTotal = caseScores.reduce((total, entry) => addUsage(total, entry.panelUsage), seed);
+    // Hybrid mode bills the stages at different rates; either unknown -> unknown.
+    const findCost = estimateCostUsd(model, findTotal, input.env ?? {});
+    const panelCost = estimateCostUsd(
+      input.refuteProvider ? input.refuteProvider.model : model,
+      panelTotal,
+      input.env ?? {},
+    );
     scores.push({
       model,
       cases: caseScores,
       usage,
-      costUsd: estimateCostUsd(model, usage, input.env ?? {}),
+      costUsd: findCost === null || panelCost === null ? null : findCost + panelCost,
     });
   }
 

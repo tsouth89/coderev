@@ -7,7 +7,7 @@ import {
   parseBenchmarkSuite,
   runBenchmark,
 } from "../src/benchmark.ts";
-import { resolveReviewProvider } from "../src/provider.ts";
+import { resolveRefuteProvider, resolveReviewProvider } from "../src/provider.ts";
 
 const USAGE = `CodeRev benchmark: score review models on recorded pull requests for cost and baseline agreement.
 
@@ -22,7 +22,9 @@ Flags:
   --repo   Directory of the repository the suite refers to. Defaults to the working directory.
   --context  Also fetch full changed-file contents and feed them to the find stage.
 
-Environment: same as coderev.
+Environment: same as coderev, plus REVIEW_REFUTE_PROVIDER / REVIEW_REFUTE_MODEL /
+REVIEW_REFUTE_API_KEY for hybrid mode -- the panel stays on the refute provider
+while --model varies generation.
 
 Cost is measured from reported token usage, not estimated from diff size.
 Agreement with the baseline is not correctness; unmatched findings need a human read.`;
@@ -50,11 +52,14 @@ async function main(): Promise<number> {
 
   const resolution = resolveReviewProvider(process.env);
   if (!resolution.ok) throw new Error(resolution.reason);
+  const refuteResolution = resolveRefuteProvider(process.env);
+  if (refuteResolution !== null && !refuteResolution.ok) throw new Error(refuteResolution.reason);
 
   const parsedLimit = Number(values.limit);
   const scores = await runBenchmark({
     suite,
     baseProvider: resolution.provider,
+    ...(refuteResolution?.ok ? { refuteProvider: refuteResolution.provider } : {}),
     models: Array.isArray(values.model) ? values.model : [],
     limit: Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : suite.cases.length,
     withContext: values.context === true,

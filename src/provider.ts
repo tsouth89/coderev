@@ -131,6 +131,42 @@ export function resolveReviewProvider(
   return { ok: true, provider: { baseUrl, model, apiKey } };
 }
 
+/**
+ * Resolve a distinct provider for the refutation panel, or null when the
+ * panel should use the find-stage provider.
+ *
+ * The two stages have opposite economics and opposite failure modes, measured
+ * across five benchmark runs: the strongest generator (Muse) had the most
+ * lenient panel — it unanimously kept a claim a human had verified false,
+ * which DeepSeek's panel killed 3-0 from the same evidence — while DeepSeek's
+ * near-free cache pricing makes the 3N re-sent diffs of a panel almost
+ * costless. Routing each stage to the model that is good at it is the point
+ * of splitting them.
+ *
+ * REVIEW_MODEL and REVIEW_API_BASE_URL deliberately do NOT inherit: they
+ * describe the find provider, and leaking a find-model slug to a different
+ * vendor is exactly the silent-wrong-model trap (DeepSeek answers unknown
+ * slugs as Flash without erroring). The refute model is REVIEW_REFUTE_MODEL
+ * or the refute provider's own default; only the key falls back, because one
+ * key per vendor is the common case.
+ */
+export function resolveRefuteProvider(
+  env: Readonly<Record<string, string | undefined>>,
+): ReviewProviderResolution | null {
+  const anySet =
+    env.REVIEW_REFUTE_PROVIDER?.trim() ||
+    env.REVIEW_REFUTE_MODEL?.trim() ||
+    env.REVIEW_REFUTE_API_BASE_URL?.trim();
+  if (!anySet) return null;
+
+  const overlay: Record<string, string | undefined> = { ...env };
+  overlay.REVIEW_PROVIDER = env.REVIEW_REFUTE_PROVIDER ?? env.REVIEW_PROVIDER;
+  overlay.REVIEW_MODEL = env.REVIEW_REFUTE_MODEL;
+  overlay.REVIEW_API_BASE_URL = env.REVIEW_REFUTE_API_BASE_URL;
+  overlay.REVIEW_API_KEY = env.REVIEW_REFUTE_API_KEY ?? env.REVIEW_API_KEY;
+  return resolveReviewProvider(overlay);
+}
+
 /** Join a base URL with a path without doubling or dropping slashes. */
 export function joinUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;

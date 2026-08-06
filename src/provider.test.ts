@@ -10,6 +10,7 @@ import {
   joinUrl,
   parseContent,
   parseUsage,
+  resolveRefuteProvider,
   resolveReviewProvider,
   REVIEW_PROVIDER_PRESETS,
   type TokenUsage,
@@ -96,6 +97,49 @@ describe("resolveReviewProvider", () => {
       REVIEW_API_KEY: "k",
     });
     assert.equal(resolved.ok, false);
+  });
+});
+
+describe("resolveRefuteProvider", () => {
+  it("returns null when no refute variables are set", () => {
+    assert.equal(resolveRefuteProvider({ DEEPSEEK_API_KEY: "k" }), null);
+  });
+
+  it("routes the panel to a different provider, inheriting only the key fallback", () => {
+    const resolved = resolveRefuteProvider({
+      REVIEW_PROVIDER: "meta",
+      META_API_KEY: "meta-key",
+      REVIEW_REFUTE_PROVIDER: "deepseek",
+      DEEPSEEK_API_KEY: "ds-key",
+    });
+    assert.partialDeepStrictEqual(resolved?.ok && resolved.provider, {
+      baseUrl: "https://api.deepseek.com/v1",
+      model: "deepseek-v4-pro",
+      apiKey: "ds-key",
+    });
+  });
+
+  it("does not leak the find model to the refute provider", () => {
+    // A find-model slug on a different vendor is the silent-wrong-model trap:
+    // DeepSeek answers unknown slugs as Flash without erroring.
+    const resolved = resolveRefuteProvider({
+      REVIEW_PROVIDER: "meta",
+      REVIEW_MODEL: "muse-spark-1.2-contributor",
+      META_API_KEY: "k",
+      REVIEW_REFUTE_PROVIDER: "deepseek",
+      DEEPSEEK_API_KEY: "k2",
+    });
+    assert.equal(resolved?.ok && resolved.provider.model, "deepseek-v4-pro");
+  });
+
+  it("does not leak a custom find base URL to the refute provider", () => {
+    const resolved = resolveRefuteProvider({
+      REVIEW_API_BASE_URL: "https://custom.test/v1",
+      REVIEW_MODEL: "m",
+      REVIEW_API_KEY: "k",
+      REVIEW_REFUTE_PROVIDER: "deepseek",
+    });
+    assert.equal(resolved?.ok && resolved.provider.baseUrl, "https://api.deepseek.com/v1");
   });
 });
 
