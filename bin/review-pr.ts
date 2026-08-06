@@ -5,6 +5,7 @@ import { parse, reportFailure, requireString } from "../src/args.ts";
 import { fetchPullRequestContext } from "../src/context.ts";
 import { buildFileInventory } from "../src/inventory.ts";
 import {
+  createInlinePullRequestReview,
   fetchExistingReviewComment,
   fetchPullRequestDiff,
   upsertPullRequestComment,
@@ -16,10 +17,14 @@ import {
   resolveReviewProvider,
 } from "../src/provider.ts";
 import {
+  classifyAgainstPrevious,
+  dedupeFindings,
   formatReviewComment,
-  stripGeneratedHunks,
+  parseCommentableLines,
   parsePreviousState,
+  planInlineComments,
   reviewDiff,
+  stripGeneratedHunks,
   truncateDiff,
   MAX_DIFF_CHARACTERS,
   REVIEW_COMMENT_MARKER,
@@ -36,6 +41,7 @@ Flags:
   --conventions  Path to a conventions file to include in the prompt (e.g. AGENTS.md).
   --repo         Directory of the repository to review. Defaults to the working directory.
   --context      Also fetch full changed-file contents and feed them to the find stage.
+  --summary-only Skip inline file/line comments; post only the summary comment.
 
 Environment:
   REVIEW_API_KEY       Model API key. Falls back to the provider's own variable.
@@ -62,6 +68,7 @@ async function main(): Promise<number> {
       conventions: { type: "string" },
       repo: { type: "string" },
       context: { type: "boolean", default: false },
+      "summary-only": { type: "boolean", default: false },
     },
     usage: USAGE,
   });
@@ -184,6 +191,32 @@ async function main(): Promise<number> {
   console.log(
     `${outcome === "updated" ? "Updated the review comment" : "Posted a review comment"} on PR ${pr} (${findings.length} finding(s)).`,
   );
+
+  // Inline comments: fresh findings only (a re-posted inline for a finding the
+  // author already read is spam with an anchor), validated against the RAW
+  // diff since that is what GitHub accepts anchors on. Any failure degrades to
+  // the summary that just posted — inline is presentation, not the record.
+  if (values["summary-only"] !== true && findings.length > 0) {
+    const { fresh } = classifyAgainstPrevious(dedupeFindings(findings), previous);
+    const { anchored, unanchored } = planInlineComments(fresh, parseCommentableLines(rawDiff));
+    if (unanchored.length > 0) {
+      console.log(`${unanchored.length} finding(s) had no diff anchor; summary only.`);
+    }
+    if (anchored.length > 0) {
+      try {
+        await createInlinePullRequestReview({
+          pr,
+          comments: anchored,
+          ...(cwd === undefined ? {} : { cwd }),
+        });
+        console.log(`Posted ${anchored.length} inline comment(s).`);
+      } catch (cause) {
+        console.warn(
+          `Inline comments failed, summary stands: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
+    }
+  }
   return 0;
 }
 

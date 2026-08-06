@@ -638,6 +638,140 @@ export function dedupeFindings(findings: ReadonlyArray<ReviewFinding>): Array<Gr
   return groups.map((group) => group.grouped);
 }
 
+export interface PassClassification {
+  readonly fresh: ReadonlyArray<GroupedFinding>;
+  readonly carried: ReadonlyArray<GroupedFinding>;
+  readonly resolved: ReadonlyArray<PreviousFinding>;
+}
+
+/**
+ * Split this pass's findings against the previous pass. Shared by the summary
+ * formatter and the inline planner so "new" means exactly one thing: inline
+ * comments post only for fresh findings, because a re-posted inline comment
+ * for a finding the author has already read is spam with an anchor.
+ */
+export function classifyAgainstPrevious(
+  grouped: ReadonlyArray<GroupedFinding>,
+  previous: ReadonlyArray<PreviousFinding> | null,
+): PassClassification {
+  if (previous === null) return { fresh: grouped, carried: [], resolved: [] };
+  const isCarried = (finding: GroupedFinding): boolean =>
+    finding.locations.some((location) =>
+      matchesPrevious({ file: location.file, title: finding.title }, previous),
+    );
+  return {
+    fresh: grouped.filter((finding) => !isCarried(finding)),
+    carried: grouped.filter(isCarried),
+    resolved: previous.filter(
+      (entry) =>
+        !grouped.some((finding) =>
+          finding.locations.some((location) =>
+            matchesPrevious({ file: location.file, title: finding.title }, [entry]),
+          ),
+        ),
+    ),
+  };
+}
+
+/**
+ * Head-side line numbers GitHub will accept an inline comment on, per file.
+ *
+ * The review API rejects the ENTIRE review when any single anchor is not part
+ * of the pull request's diff, so anchoring is validated here rather than
+ * discovered as a 422. Added and context lines within hunks are commentable
+ * on side RIGHT; deletion lines advance only the old file and are skipped.
+ */
+export function parseCommentableLines(diff: string): Map<string, Set<number>> {
+  const commentable = new Map<string, Set<number>>();
+  let currentFile: string | null = null;
+  let newLine = 0;
+  let inHunk = false;
+  for (const line of diff.split("\n")) {
+    const fileMatch = line.match(/^\+\+\+ b\/(.+)$/);
+    if (fileMatch?.[1]) {
+      currentFile = fileMatch[1];
+      inHunk = false;
+      continue;
+    }
+    if (line.startsWith("+++ /dev/null")) {
+      currentFile = null;
+      inHunk = false;
+      continue;
+    }
+    const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunkMatch?.[1] && currentFile !== null) {
+      newLine = Number(hunkMatch[1]);
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk || currentFile === null) continue;
+    if (line.startsWith("+") || line.startsWith(" ") || line === "") {
+      let bucket = commentable.get(currentFile);
+      if (!bucket) {
+        bucket = new Set<number>();
+        commentable.set(currentFile, bucket);
+      }
+      bucket.add(newLine);
+      newLine += 1;
+    } else if (line.startsWith("-")) {
+      // old-side line: does not advance the new file
+    } else {
+      inHunk = false;
+    }
+  }
+  return commentable;
+}
+
+export interface InlineComment {
+  readonly path: string;
+  readonly line: number;
+  readonly body: string;
+}
+
+export interface InlinePlan {
+  readonly anchored: ReadonlyArray<InlineComment>;
+  readonly unanchored: ReadonlyArray<GroupedFinding>;
+}
+
+/**
+ * Anchor each fresh finding at its first diff-valid location; one inline
+ * comment per finding, never per location — a family finding with three call
+ * sites reads as one comment naming all three, not three pings. Findings with
+ * no valid anchor (line 0, out-of-hunk lines, files outside the diff) stay in
+ * the summary rather than sinking the whole review post.
+ */
+export function planInlineComments(
+  fresh: ReadonlyArray<GroupedFinding>,
+  commentable: ReadonlyMap<string, ReadonlySet<number>>,
+): InlinePlan {
+  const anchored: Array<InlineComment> = [];
+  const unanchored: Array<GroupedFinding> = [];
+  for (const finding of fresh) {
+    const spot = finding.locations.find(
+      (location) => location.line > 0 && commentable.get(location.file)?.has(location.line),
+    );
+    if (!spot) {
+      unanchored.push(finding);
+      continue;
+    }
+    const others = finding.locations
+      .filter((location) => location !== spot)
+      .map((location) => `\`${location.file}\`${location.line > 0 ? `:${location.line}` : ""}`);
+    anchored.push({
+      path: spot.file,
+      line: spot.line,
+      body: [
+        `**${finding.title}** \u00b7 severity: ${finding.severity}`,
+        ...(finding.detail.length > 0 ? ["", finding.detail] : []),
+        ...(others.length > 0 ? ["", `Also applies to: ${others.join(", ")}`] : []),
+        "",
+        "<sub>CodeRev \u00b7 advisory</sub>",
+      ].join("\n"),
+    });
+  }
+  return { anchored, unanchored };
+}
+
 export function formatReviewComment(input: {
   readonly findings: ReadonlyArray<ReviewFinding>;
   readonly model: string;
@@ -658,24 +792,7 @@ export function formatReviewComment(input: {
     )
     .map((entry) => entry.finding);
   const previous = input.previous ?? null;
-  const isCarried = (finding: GroupedFinding): boolean =>
-    previous !== null &&
-    finding.locations.some((location) =>
-      matchesPrevious({ file: location.file, title: finding.title }, previous),
-    );
-  const fresh = previous === null ? grouped : grouped.filter((finding) => !isCarried(finding));
-  const carried = previous === null ? [] : grouped.filter(isCarried);
-  const resolved =
-    previous === null
-      ? []
-      : previous.filter(
-          (entry) =>
-            !grouped.some((finding) =>
-              finding.locations.some((location) =>
-                matchesPrevious({ file: location.file, title: finding.title }, [entry]),
-              ),
-            ),
-        );
+  const { fresh, carried, resolved } = classifyAgainstPrevious(grouped, previous);
 
   const renderFull = (finding: GroupedFinding, index: number) => {
     lines.push(`${index + 1}. **${finding.title}**`, "");

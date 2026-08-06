@@ -104,6 +104,45 @@ export async function resolvePullRequestNumber(pr: string, cwd?: string): Promis
   return number;
 }
 
+/**
+ * Post a batch of inline comments as one PR review.
+ *
+ * One review rather than N comment calls: a single notification for the
+ * author, and atomic validation — though that cuts both ways, since GitHub
+ * rejects the whole review over one bad anchor. Callers pre-validate anchors
+ * against the diff and treat any failure here as degrade-to-summary, never as
+ * a failed review run.
+ */
+export async function createInlinePullRequestReview(input: {
+  readonly pr: string;
+  readonly comments: ReadonlyArray<{ readonly path: string; readonly line: number; readonly body: string }>;
+  readonly cwd?: string;
+}): Promise<void> {
+  const number = await resolvePullRequestNumber(input.pr, input.cwd);
+  const payload = JSON.stringify({
+    event: "COMMENT",
+    comments: input.comments.map((comment) => ({
+      path: comment.path,
+      line: comment.line,
+      side: "RIGHT",
+      body: comment.body,
+    })),
+  });
+  const { writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const file = join(tmpdir(), `coderev-review-${Date.now()}-${process.pid}.json`);
+  try {
+    await writeFile(file, payload, "utf8");
+    await gh(
+      ["api", "-X", "POST", `repos/{owner}/{repo}/pulls/${number}/reviews`, "--input", file],
+      input.cwd,
+    );
+  } finally {
+    await rm(file, { force: true }).catch(() => {});
+  }
+}
+
 /** Body of the existing review comment (by marker prefix), or null. */
 export async function fetchExistingReviewComment(input: {
   readonly pr: string;
