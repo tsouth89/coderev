@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   classifyAgainstPrevious,
+  formatAnchorSnippet,
   parseCommentableLines,
   planInlineComments,
   type GroupedFinding,
@@ -74,6 +75,31 @@ describe("planInlineComments", () => {
     );
     assert.equal(plan.anchored.length, 0);
     assert.equal(plan.unanchored.length, 2);
+  });
+});
+
+describe("formatAnchorSnippet", () => {
+  const content = Array.from({ length: 200 }, (_, i) => `line ${i + 1}`).join("\n");
+
+  it("returns a numbered window around the cited line", () => {
+    const snippet = formatAnchorSnippet({ file: "a.ts", line: 100, content });
+    assert.match(snippet ?? "", /around the cited line 100/);
+    assert.match(snippet ?? "", /^40: line 40$/m);
+    assert.match(snippet ?? "", /^160: line 160$/m);
+    assert.doesNotMatch(snippet ?? "", /^39: /m);
+    assert.doesNotMatch(snippet ?? "", /^161: /m);
+  });
+
+  it("clamps the window at file boundaries", () => {
+    const snippet = formatAnchorSnippet({ file: "a.ts", line: 3, content });
+    assert.match(snippet ?? "", /^1: line 1$/m);
+  });
+
+  it("returns null for a cited line past end of file or line zero", () => {
+    // A stale line number must produce no evidence rather than the wrong
+    // region presented as the right one.
+    assert.equal(formatAnchorSnippet({ file: "a.ts", line: 999, content }), null);
+    assert.equal(formatAnchorSnippet({ file: "a.ts", line: 0, content }), null);
   });
 });
 

@@ -128,6 +128,22 @@ async function main(): Promise<number> {
   // Always on: a few KB that closes the file-existence false-positive class.
   const inventory = await buildFileInventory(diff, cwd);
 
+  // Panel evidence for out-of-diff claims: read the file a finding cites from
+  // the local checkout, best-effort. Three of four out-of-diff false positives
+  // were refutable by the exact region the finding itself named.
+  const { readFile: readFsFile } = await import("node:fs/promises");
+  const { join, isAbsolute, normalize } = await import("node:path");
+  const repoRoot = cwd ?? process.cwd();
+  const readCitedFile = async (file: string): Promise<string | null> => {
+    const normalized = normalize(file);
+    if (isAbsolute(normalized) || normalized.startsWith("..")) return null;
+    try {
+      return await readFsFile(join(repoRoot, normalized), "utf8");
+    } catch {
+      return null;
+    }
+  };
+
   console.log(
     `Reviewing PR ${pr} with ${provider.model}` +
       (find2Provider ? ` + ${find2Provider.model}` : "") +
@@ -141,6 +157,7 @@ async function main(): Promise<number> {
     panelContext: fullContext,
     inventory,
     provider,
+    readCitedFile,
     ...(find2Provider ? { find2Provider } : {}),
     ...(refuteProvider ? { refuteProvider } : {}),
     onProgress: (message) => console.log(message),

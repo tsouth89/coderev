@@ -859,6 +859,44 @@ export function formatReviewComment(input: {
   return lines.join("\n");
 }
 
+/** Lines of cited-file context handed to the panel around a finding's anchor. */
+export const ANCHOR_CONTEXT_RADIUS = 60;
+
+/**
+ * The region a finding cites, numbered, for the panel's evidence.
+ *
+ * Three of four out-of-diff false positives shared one shape: the refuting
+ * fact sat in the exact file-and-line region the finding itself cited — a
+ * refresh() call, a detail-field check one line above the branch the claim
+ * analysed — but the panel never saw it because the file was outside the
+ * diff. A finding names its own coordinates; this reads them.
+ *
+ * Rides AFTER the claim in the vote prompt: it differs per finding, so
+ * placing it in the suffix leaves the shared diff+context+inventory prefix
+ * cacheable.
+ */
+export function formatAnchorSnippet(input: {
+  readonly file: string;
+  readonly line: number;
+  readonly content: string;
+}): string | null {
+  if (input.line <= 0) return null;
+  const lines = input.content.split(/\r?\n/);
+  if (input.line > lines.length) return null;
+  const start = Math.max(1, input.line - ANCHOR_CONTEXT_RADIUS);
+  const end = Math.min(lines.length, input.line + ANCHOR_CONTEXT_RADIUS);
+  const numbered = lines
+    .slice(start - 1, end)
+    .map((text, index) => `${start + index}: ${text}`)
+    .join("\n");
+  return [
+    `Current contents of ${input.file} around the cited line ${input.line}:`,
+    "```",
+    numbered,
+    "```",
+  ].join("\n");
+}
+
 /** Run `tasks` with a bounded number in flight, preserving input order. */
 async function mapWithConcurrency<A, B>(
   items: ReadonlyArray<A>,
@@ -895,6 +933,7 @@ interface Vote {
 async function castVote(input: {
   readonly findingIndex: number;
   readonly prompt: string;
+  readonly anchorSnippet: string | null;
   readonly lens: string;
   readonly provider: ResolvedReviewProvider;
   readonly onProgress: (message: string) => void;
@@ -903,7 +942,9 @@ async function castVote(input: {
     const result = await requestCompletion({
       provider: input.provider,
       systemPrompt: REFUTE_SYSTEM_PROMPT,
-      userPrompt: `${input.prompt}
+      userPrompt: `${input.prompt}${input.anchorSnippet ? `
+
+${input.anchorSnippet}` : ""}
 
 ${input.lens}`,
       temperature: REFUTE_TEMPERATURE,
@@ -942,6 +983,8 @@ async function runPanel(input: {
   readonly diff: string;
   readonly inventory?: string | null;
   readonly context?: string | null;
+  /** Per-candidate cited-region snippets, parallel to `candidates`. */
+  readonly anchorSnippets?: ReadonlyArray<string | null>;
   /** The panel's provider — may differ from the generator's. */
   readonly provider: ResolvedReviewProvider;
   readonly onProgress: (message: string) => void;
@@ -963,6 +1006,7 @@ async function runPanel(input: {
     castVote({
       findingIndex: task.findingIndex,
       prompt: prompts[task.findingIndex] ?? "",
+      anchorSnippet: input.anchorSnippets?.[task.findingIndex] ?? null,
       lens: REFUTE_LENSES[task.seat % REFUTE_LENSES.length] ?? "",
       provider: input.provider,
       onProgress: input.onProgress,
@@ -1032,6 +1076,13 @@ export async function reviewDiff(input: {
   readonly panelContext?: string | null;
   /** Tracked-file inventory for the touched directories; see src/inventory.ts. */
   readonly inventory?: string | null;
+  /**
+   * Reads a cited file's current contents so the panel can see the region a
+   * finding names. Best-effort: null for anything unreadable. Kept as a
+   * callback so this module stays IO-free and the benchmark stays honest
+   * about what evidence the pipeline actually had.
+   */
+  readonly readCitedFile?: (file: string) => Promise<string | null>;
   readonly provider: ResolvedReviewProvider;
   /** Second generator for dual-generator mode; its candidates union with the primary's. */
   readonly find2Provider?: ResolvedReviewProvider;
@@ -1132,11 +1183,21 @@ export async function reviewDiff(input: {
       : `${candidates.length} candidate finding(s); refuting.`,
   );
 
+  const anchorSnippets = await Promise.all(
+    candidates.map(async (candidate) => {
+      if (!input.readCitedFile || candidate.line <= 0) return null;
+      const content = await input.readCitedFile(candidate.file);
+      if (content === null) return null;
+      return formatAnchorSnippet({ file: candidate.file, line: candidate.line, content });
+    }),
+  );
+
   const adjudicated = await runPanel({
     candidates,
     diff: input.diff,
     inventory: input.inventory ?? null,
     context: input.panelContext ?? null,
+    anchorSnippets,
     provider: input.refuteProvider ?? input.provider,
     onProgress: note,
   });

@@ -320,9 +320,21 @@ export async function runBenchmark(input: {
 
       note(`PR ${benchmarkCase.pr} (${index + 1}/${cases.length})...`);
       const startedAt = Date.now();
+      const { readFile: readFsFile } = await import("node:fs/promises");
+      const { join: joinPath, isAbsolute, normalize } = await import("node:path");
+      const repoRoot = input.cwd ?? process.cwd();
       const result = await reviewDiff({
         diff,
         conventions: null,
+        readCitedFile: async (file) => {
+          const normalized = normalize(file);
+          if (isAbsolute(normalized) || normalized.startsWith("..")) return null;
+          try {
+            return await readFsFile(joinPath(repoRoot, normalized), "utf8");
+          } catch {
+            return null;
+          }
+        },
         context: input.withContext === true ? (contexts.get(benchmarkCase.pr) ?? null) : null,
         panelContext: contexts.get(benchmarkCase.pr) ?? null,
         inventory: await buildFileInventory(diff, input.cwd),
