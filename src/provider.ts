@@ -150,21 +150,44 @@ export function resolveReviewProvider(
  * or the refute provider's own default; only the key falls back, because one
  * key per vendor is the common case.
  */
-export function resolveRefuteProvider(
+function resolveSecondaryProvider(
   env: Readonly<Record<string, string | undefined>>,
+  prefix: "REVIEW_REFUTE" | "REVIEW_FIND2",
 ): ReviewProviderResolution | null {
   const anySet =
-    env.REVIEW_REFUTE_PROVIDER?.trim() ||
-    env.REVIEW_REFUTE_MODEL?.trim() ||
-    env.REVIEW_REFUTE_API_BASE_URL?.trim();
+    env[`${prefix}_PROVIDER`]?.trim() ||
+    env[`${prefix}_MODEL`]?.trim() ||
+    env[`${prefix}_API_BASE_URL`]?.trim();
   if (!anySet) return null;
 
   const overlay: Record<string, string | undefined> = { ...env };
-  overlay.REVIEW_PROVIDER = env.REVIEW_REFUTE_PROVIDER ?? env.REVIEW_PROVIDER;
-  overlay.REVIEW_MODEL = env.REVIEW_REFUTE_MODEL;
-  overlay.REVIEW_API_BASE_URL = env.REVIEW_REFUTE_API_BASE_URL;
-  overlay.REVIEW_API_KEY = env.REVIEW_REFUTE_API_KEY ?? env.REVIEW_API_KEY;
+  overlay.REVIEW_PROVIDER = env[`${prefix}_PROVIDER`] ?? env.REVIEW_PROVIDER;
+  overlay.REVIEW_MODEL = env[`${prefix}_MODEL`];
+  overlay.REVIEW_API_BASE_URL = env[`${prefix}_API_BASE_URL`];
+  overlay.REVIEW_API_KEY = env[`${prefix}_API_KEY`] ?? env.REVIEW_API_KEY;
   return resolveReviewProvider(overlay);
+}
+
+export function resolveRefuteProvider(
+  env: Readonly<Record<string, string | undefined>>,
+): ReviewProviderResolution | null {
+  return resolveSecondaryProvider(env, "REVIEW_REFUTE");
+}
+
+/**
+ * A second generator (REVIEW_FIND2_*), for dual-generator mode.
+ *
+ * Exists because the recall gap is a knowledge gap, not a prompt gap: the
+ * highest-value finding of the first head-to-head (a DPI-aware Win32 API the
+ * change should have used) came from the incumbent, and no amount of context
+ * teaches a model an API it does not know. Two models hunt — measured on the
+ * benchmark suite, they find substantially different things — their findings
+ * union and dedupe, and one panel judges everything.
+ */
+export function resolveFind2Provider(
+  env: Readonly<Record<string, string | undefined>>,
+): ReviewProviderResolution | null {
+  return resolveSecondaryProvider(env, "REVIEW_FIND2");
 }
 
 /** Join a base URL with a path without doubling or dropping slashes. */

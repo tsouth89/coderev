@@ -5,7 +5,12 @@ import { parse, reportFailure, requireString } from "../src/args.ts";
 import { fetchPullRequestContext } from "../src/context.ts";
 import { buildFileInventory } from "../src/inventory.ts";
 import { fetchPullRequestDiff, upsertPullRequestComment } from "../src/github.ts";
-import { estimateCostUsd, resolveRefuteProvider, resolveReviewProvider } from "../src/provider.ts";
+import {
+  estimateCostUsd,
+  resolveFind2Provider,
+  resolveRefuteProvider,
+  resolveReviewProvider,
+} from "../src/provider.ts";
 import {
   formatReviewComment,
   reviewDiff,
@@ -34,7 +39,13 @@ Environment:
 
   REVIEW_REFUTE_PROVIDER / REVIEW_REFUTE_MODEL / REVIEW_REFUTE_API_KEY
                        Route the refutation panel to a different provider than
-                       generation (hybrid mode). Unset = same provider.`;
+                       generation (hybrid mode). Unset = same provider.
+
+  REVIEW_FIND2_PROVIDER / REVIEW_FIND2_MODEL / REVIEW_FIND2_API_KEY
+                       Add a second generator (dual-generator mode); its
+                       candidates union with the primary's before the panel.
+                       Misconfiguration degrades to single-generator with a
+                       warning rather than failing the review.`;
 
 async function main(): Promise<number> {
   const { values, help } = parse({
@@ -65,6 +76,15 @@ async function main(): Promise<number> {
   if (refuteResolution !== null && !refuteResolution.ok) throw new Error(refuteResolution.reason);
   const refuteProvider = refuteResolution?.ok ? refuteResolution.provider : undefined;
 
+  // Degrade rather than fail: a fleet workflow may declare the second
+  // generator before its key secret exists, and an enhancement must never turn
+  // a working review into a broken one.
+  const find2Resolution = resolveFind2Provider(process.env);
+  if (find2Resolution !== null && !find2Resolution.ok) {
+    console.warn(`Second generator disabled: ${find2Resolution.reason}`);
+  }
+  const find2Provider = find2Resolution?.ok ? find2Resolution.provider : undefined;
+
   const rawDiff = await fetchPullRequestDiff(pr, cwd);
   if (rawDiff.trim().length === 0) {
     console.log("Empty diff; nothing to review.");
@@ -93,16 +113,18 @@ async function main(): Promise<number> {
 
   console.log(
     `Reviewing PR ${pr} with ${provider.model}` +
+      (find2Provider ? ` + ${find2Provider.model}` : "") +
       (refuteProvider ? ` (panel: ${refuteProvider.model})` : "") +
       "...",
   );
-  const { findings, usage, findUsage, panelUsage, generationError } = await reviewDiff({
+  const { findings, usage, findUsage, find2Usage, panelUsage, generationError } = await reviewDiff({
     diff,
     conventions,
     context,
     panelContext: fullContext,
     inventory,
     provider,
+    ...(find2Provider ? { find2Provider } : {}),
     ...(refuteProvider ? { refuteProvider } : {}),
     onProgress: (message) => console.log(message),
   });
@@ -110,8 +132,14 @@ async function main(): Promise<number> {
   // With hybrid routing the stages bill at different rates; summing per-stage
   // estimates is the only honest total. Either stage unknown -> total unknown.
   const findCost = estimateCostUsd(provider.model, findUsage, process.env);
+  const find2Cost = find2Provider
+    ? estimateCostUsd(find2Provider.model, find2Usage, process.env)
+    : 0;
   const panelCost = estimateCostUsd((refuteProvider ?? provider).model, panelUsage, process.env);
-  const cost = findCost === null || panelCost === null ? null : findCost + panelCost;
+  const cost =
+    findCost === null || panelCost === null || find2Cost === null
+      ? null
+      : findCost + find2Cost + panelCost;
   console.log(
     `Tokens: ${usage.inputTokens} in (${usage.cachedInputTokens} cached), ${usage.outputTokens} out` +
       (cost === null ? "" : ` (~$${cost.toFixed(4)})`),

@@ -34,6 +34,19 @@ inputs:
     description: Token used for reading the diff and posting the comment.
     required: false
     default: ${{ github.token }}
+  find2-provider:
+    description: Second generator's provider (dual-generator mode). Empty disables it.
+    required: false
+    default: ""
+  find2-model:
+    description: Second generator's model. Empty uses the provider's default.
+    required: false
+    default: ""
+  find2-api-key:
+    description: Second generator's API key. Empty degrades to single-generator with a warning.
+    required: false
+    default: ""
+
 
 runs:
   using: composite
@@ -51,6 +64,9 @@ runs:
         REVIEW_PROVIDER: ${{ inputs.provider }}
         REVIEW_MODEL: ${{ inputs.model }}
         REVIEW_API_BASE_URL: ${{ inputs.base-url }}
+        REVIEW_FIND2_PROVIDER: ${{ inputs.find2-api-key != '' && inputs.find2-provider || '' }}
+        REVIEW_FIND2_MODEL: ${{ inputs.find2-api-key != '' && inputs.find2-model || '' }}
+        REVIEW_FIND2_API_KEY: ${{ inputs.find2-api-key }}
       run: |
         args=(--pr "${{ inputs.pr }}")
         [[ "${{ inputs.post }}" == "true" ]] && args+=(--post)

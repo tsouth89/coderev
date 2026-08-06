@@ -125,6 +125,8 @@ export interface ReviewFinding {
   readonly title: string;
   readonly detail: string;
   readonly severity: FindingSeverity;
+  /** Which generator produced it, for the audit's which-model-earns-keeps question. Absent in single-generator mode. */
+  readonly source?: string;
 }
 
 export interface RefutationVerdict {
@@ -431,6 +433,33 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 /** Titles sharing at least half their meaningful words are the same concern. */
 export const DEDUPE_SIMILARITY_THRESHOLD = 0.5;
 
+/**
+ * Union two generators' candidates, dropping the second generator's near
+ * duplicates before the panel sees them.
+ *
+ * Presentation dedupe (dedupeFindings) merges across files on purpose; this
+ * one is deliberately narrower — same file plus similar title — because its
+ * job is only to stop paying three panel votes twice for one finding phrased
+ * two ways. A missed dedupe costs votes and is then merged at presentation; an
+ * overeager one silently discards a distinct finding, which is worse.
+ */
+export function unionCandidates(
+  primary: ReadonlyArray<ReviewFinding>,
+  secondary: ReadonlyArray<ReviewFinding>,
+): Array<ReviewFinding> {
+  const union = [...primary];
+  for (const candidate of secondary) {
+    const candidateTokens = titleTokens(candidate.title);
+    const duplicate = union.some(
+      (existing) =>
+        existing.file === candidate.file &&
+        jaccard(titleTokens(existing.title), candidateTokens) >= DEDUPE_SIMILARITY_THRESHOLD,
+    );
+    if (!duplicate) union.push(candidate);
+  }
+  return union;
+}
+
 export interface GroupedFinding {
   readonly title: string;
   readonly detail: string;
@@ -661,6 +690,8 @@ export interface DiffReviewResult {
    * quietly wrong in whichever direction the rates differ.
    */
   readonly findUsage: TokenUsage;
+  /** Second generator's usage; EMPTY_USAGE in single-generator mode. */
+  readonly find2Usage: TokenUsage;
   readonly panelUsage: TokenUsage;
   /**
    * Why generation failed, or null if it ran.
@@ -694,6 +725,8 @@ export async function reviewDiff(input: {
   /** Tracked-file inventory for the touched directories; see src/inventory.ts. */
   readonly inventory?: string | null;
   readonly provider: ResolvedReviewProvider;
+  /** Second generator for dual-generator mode; its candidates union with the primary's. */
+  readonly find2Provider?: ResolvedReviewProvider;
   /**
    * Provider for the refutation panel; defaults to `provider`. Split because
    * the stages have opposite economics and failure modes: the strongest
@@ -705,23 +738,52 @@ export async function reviewDiff(input: {
 }): Promise<DiffReviewResult> {
   const note = input.onProgress ?? (() => {});
 
-  let found = { content: "", usage: EMPTY_USAGE };
-  let generationError: string | null = null;
-  try {
-    found = await requestCompletion({
-      provider: input.provider,
+  const findPrompt = buildFindPrompt({
+    diff: input.diff,
+    conventions: input.conventions,
+    context: input.context ?? null,
+    inventory: input.inventory ?? null,
+  });
+  const generate = async (provider: ResolvedReviewProvider) =>
+    requestCompletion({
+      provider,
       systemPrompt: FIND_SYSTEM_PROMPT,
-      userPrompt: buildFindPrompt({
-        diff: input.diff,
-        conventions: input.conventions,
-        context: input.context ?? null,
-        inventory: input.inventory ?? null,
-      }),
+      userPrompt: findPrompt,
       temperature: FIND_TEMPERATURE,
       onRetry: (message) => note(`  retry: ${message}`),
     });
-  } catch (cause) {
-    generationError = cause instanceof Error ? cause.message : String(cause);
+
+  // Both generators run concurrently. One failing degrades to single-generator
+  // coverage with a warning; the review only counts as not-run when EVERY
+  // generator failed, because a partial hunt is still a hunt while a silent
+  // all-clear from a review that never happened is the worst output this tool
+  // can produce.
+  const [primary, secondary] = await Promise.all([
+    generate(input.provider).then(
+      (result) => ({ ok: true as const, result }),
+      (cause: unknown) => ({
+        ok: false as const,
+        error: cause instanceof Error ? cause.message : String(cause),
+      }),
+    ),
+    input.find2Provider
+      ? generate(input.find2Provider).then(
+          (result) => ({ ok: true as const, result }),
+          (cause: unknown) => ({
+            ok: false as const,
+            error: cause instanceof Error ? cause.message : String(cause),
+          }),
+        )
+      : Promise.resolve(null),
+  ]);
+
+  if (!primary.ok && (secondary === null || !secondary.ok)) {
+    const generationError = [
+      `${input.provider.model}: ${primary.error}`,
+      ...(secondary !== null && !secondary.ok
+        ? [`${input.find2Provider?.model ?? "find2"}: ${secondary.error}`]
+        : []),
+    ].join("; ");
     note(`Generation failed: ${generationError}`);
     return {
       candidates: [],
@@ -729,13 +791,38 @@ export async function reviewDiff(input: {
       adjudicated: [],
       usage: EMPTY_USAGE,
       findUsage: EMPTY_USAGE,
+      find2Usage: EMPTY_USAGE,
       panelUsage: EMPTY_USAGE,
       generationError,
     };
   }
+  if (!primary.ok) note(`Primary generator failed, continuing on the second: ${primary.error}`);
+  if (secondary !== null && !secondary.ok) {
+    note(`Second generator failed, continuing single-generator: ${secondary.error}`);
+  }
 
-  const candidates = parseFindings(found.content);
-  note(`${candidates.length} candidate finding(s); refuting.`);
+  const tag = (findings: ReadonlyArray<ReviewFinding>, source: string) =>
+    findings.map((finding) => ({ ...finding, source }));
+  const primaryCandidates = primary.ok
+    ? tag(parseFindings(primary.result.content), input.provider.model)
+    : [];
+  const secondaryCandidates =
+    secondary !== null && secondary.ok && input.find2Provider
+      ? tag(parseFindings(secondary.result.content), input.find2Provider.model)
+      : [];
+  const candidates = unionCandidates(primaryCandidates, secondaryCandidates);
+  // A stage that made no request has a known usage of zero, not an unknown
+  // one: EMPTY_USAGE's reported:false would AND-poison every total it is
+  // summed into and turn a fully-measured single-generator review into
+  // "cost unknown".
+  const knownZero: TokenUsage = { ...EMPTY_USAGE, reported: true };
+  const found = { usage: primary.ok ? primary.result.usage : knownZero };
+  const find2Usage = secondary !== null && secondary.ok ? secondary.result.usage : knownZero;
+  note(
+    secondaryCandidates.length > 0 || input.find2Provider
+      ? `${candidates.length} candidate finding(s) (${primaryCandidates.length} + ${secondaryCandidates.length}, deduped); refuting.`
+      : `${candidates.length} candidate finding(s); refuting.`,
+  );
 
   const adjudicated = await runPanel({
     candidates,
@@ -750,7 +837,8 @@ export async function reviewDiff(input: {
     const refuted = entry.verdicts.filter((verdict) => verdict.refuted).length;
     note(
       `  ${entry.survived ? "KEEP" : "DROP"} (${refuted}/${entry.verdicts.length} refuted) ` +
-        `${entry.finding.file}:${entry.finding.line} ${entry.finding.title}`,
+        `${entry.finding.file}:${entry.finding.line} ${entry.finding.title}` +
+        (entry.finding.source ? ` [${entry.finding.source}]` : ""),
     );
     // The stated reason is the only way to tell a panel that is discriminating
     // from one that is merely suppressing. Without it, a run of DROPs looks the
@@ -770,8 +858,9 @@ export async function reviewDiff(input: {
     candidates,
     findings: adjudicated.filter((entry) => entry.survived).map((entry) => entry.finding),
     adjudicated,
-    usage: addUsage(found.usage, panelUsage),
+    usage: addUsage(addUsage(found.usage, find2Usage), panelUsage),
     findUsage: found.usage,
+    find2Usage,
     panelUsage,
     generationError: null,
   };

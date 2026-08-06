@@ -7,7 +7,7 @@ import {
   parseBenchmarkSuite,
   runBenchmark,
 } from "../src/benchmark.ts";
-import { resolveRefuteProvider, resolveReviewProvider } from "../src/provider.ts";
+import { resolveFind2Provider, resolveRefuteProvider, resolveReviewProvider } from "../src/provider.ts";
 
 const USAGE = `CodeRev benchmark: score review models on recorded pull requests for cost and baseline agreement.
 
@@ -54,12 +54,15 @@ async function main(): Promise<number> {
   if (!resolution.ok) throw new Error(resolution.reason);
   const refuteResolution = resolveRefuteProvider(process.env);
   if (refuteResolution !== null && !refuteResolution.ok) throw new Error(refuteResolution.reason);
+  const find2Resolution = resolveFind2Provider(process.env);
+  if (find2Resolution !== null && !find2Resolution.ok) throw new Error(find2Resolution.reason);
 
   const parsedLimit = Number(values.limit);
   const scores = await runBenchmark({
     suite,
     baseProvider: resolution.provider,
     ...(refuteResolution?.ok ? { refuteProvider: refuteResolution.provider } : {}),
+    ...(find2Resolution?.ok ? { find2Provider: find2Resolution.provider } : {}),
     models: Array.isArray(values.model) ? values.model : [],
     limit: Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : suite.cases.length,
     withContext: values.context === true,

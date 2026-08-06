@@ -12,6 +12,7 @@ import {
   REVIEW_COMMENT_MARKER,
   survivesPanel,
   truncateDiff,
+  unionCandidates,
 } from "./review.ts";
 
 describe("extractJsonObject", () => {
@@ -130,6 +131,36 @@ describe("truncateDiff", () => {
 
   it("flags truncation so the comment can disclose it", () => {
     assert.deepEqual(truncateDiff("abcdef", 3), { diff: "abc", truncated: true });
+  });
+});
+
+describe("unionCandidates", () => {
+  const candidate = (file: string, title: string, source: string) =>
+    ({ file, line: 5, title, detail: "d", severity: "medium", source }) as const;
+
+  it("drops the second generator's rephrasing of the same finding", () => {
+    const union = unionCandidates(
+      [candidate("a.ts", "Race condition when queue count updates asynchronously", "m1")],
+      [candidate("a.ts", "Async queue count update race condition", "m2")],
+    );
+    assert.equal(union.length, 1);
+    assert.equal(union[0]?.source, "m1");
+  });
+
+  it("keeps a similar title on a different file — the defect may exist in both", () => {
+    const union = unionCandidates(
+      [candidate("a.ts", "Race condition when queue count updates asynchronously", "m1")],
+      [candidate("b.ts", "Async queue count update race condition", "m2")],
+    );
+    assert.equal(union.length, 2);
+  });
+
+  it("keeps distinct findings on the same file", () => {
+    const union = unionCandidates(
+      [candidate("a.ts", "Handle leaked on early return", "m1")],
+      [candidate("a.ts", "Wrong monitor used for scale computation", "m2")],
+    );
+    assert.equal(union.length, 2);
   });
 });
 
