@@ -104,11 +104,27 @@ export const REFUTE_LENSES: ReadonlyArray<string> = [
 const FIND_TEMPERATURE = 0;
 const REFUTE_TEMPERATURE = 1;
 
+/**
+ * Generator-asserted, panel-unvalidated. The panel judges whether a finding is
+ * real, not how much it matters, so treat severity as the model's opinion —
+ * useful for ordering and for a future gate-on-high-only mode, not as ground
+ * truth. The shadow-phase audit is what validates whether its "high" means
+ * anything.
+ */
+export type FindingSeverity = "high" | "medium" | "low";
+
+export const SEVERITY_ORDER: Readonly<Record<FindingSeverity, number>> = {
+  high: 0,
+  medium: 1,
+  low: 2,
+};
+
 export interface ReviewFinding {
   readonly file: string;
   readonly line: number;
   readonly title: string;
   readonly detail: string;
+  readonly severity: FindingSeverity;
 }
 
 export interface RefutationVerdict {
@@ -158,10 +174,18 @@ export const FIND_SYSTEM_PROMPT = [
   "- Issues on lines the diff does not modify.",
   "- Restating what the change is intended to do as though it were a defect.",
   "",
+  "Rate each finding's severity:",
+  '- "high": incorrect behaviour, data loss, crash, or security hole that will bite',
+  "  in realistic use. A reviewer should block the merge over it.",
+  '- "medium": a real defect with limited blast radius, or one needing an unusual',
+  "  but reachable condition.",
+  '- "low": defensive gaps, doc-versus-code mismatches, polish worth a follow-up.',
+  "",
   "Report up to 10 findings, most severe first.",
   "",
-  'Respond with JSON only: {"findings":[{"file":"path","line":123,"title":"one line",',
-  '"detail":"two or three sentences naming the concrete failure mechanism"}]}',
+  'Respond with JSON only: {"findings":[{"file":"path","line":123,"severity":"high",',
+  '"title":"one line","detail":"two or three sentences naming the concrete failure',
+  'mechanism"}]}',
 ].join("\n");
 
 /**
@@ -300,11 +324,15 @@ export function parseFindings(raw: string): ReadonlyArray<ReviewFinding> {
     const title = typeof record.title === "string" ? record.title.trim() : "";
     if (file.length === 0 || title.length === 0) continue;
 
+    const severity = record.severity;
     findings.push({
       file,
       line: typeof record.line === "number" && Number.isFinite(record.line) ? record.line : 0,
       title,
       detail: typeof record.detail === "string" ? record.detail.trim() : "",
+      // Missing or invalid rates as medium: assuming high would let a silent
+      // omission block merges under a future gate, assuming low would bury it.
+      severity: severity === "high" || severity === "medium" || severity === "low" ? severity : "medium",
     });
   }
   return findings;
@@ -381,6 +409,7 @@ export const DEDUPE_SIMILARITY_THRESHOLD = 0.5;
 export interface GroupedFinding {
   readonly title: string;
   readonly detail: string;
+  readonly severity: FindingSeverity;
   readonly locations: ReadonlyArray<{ readonly file: string; readonly line: number }>;
 }
 
@@ -418,6 +447,7 @@ export function dedupeFindings(findings: ReadonlyArray<ReviewFinding>): Array<Gr
       grouped: {
         title: finding.title,
         detail: finding.detail,
+        severity: finding.severity,
         locations: [{ file: finding.file, line: finding.line }],
       },
     });
@@ -432,7 +462,16 @@ export function formatReviewComment(input: {
 }): string {
   const lines = [REVIEW_COMMENT_MARKER, "", "### Automated review", ""];
 
-  const grouped = dedupeFindings(input.findings);
+  // Stable sort by severity so the gate-relevant findings lead; within a tier
+  // the generator's own most-severe-first ordering is preserved.
+  const grouped = dedupeFindings(input.findings)
+    .map((finding, index) => ({ finding, index }))
+    .sort(
+      (a, b) =>
+        SEVERITY_ORDER[a.finding.severity] - SEVERITY_ORDER[b.finding.severity] ||
+        a.index - b.index,
+    )
+    .map((entry) => entry.finding);
   if (grouped.length === 0) {
     lines.push("No blocking issues found.");
   } else {
@@ -443,7 +482,7 @@ export function formatReviewComment(input: {
       const rendered = finding.locations
         .map((location) => `\`${location.file}\`${location.line > 0 ? `:${location.line}` : ""}`)
         .join(", ");
-      lines.push(`   ${rendered}`, "");
+      lines.push(`   ${rendered} \u00b7 severity: ${finding.severity}`, "");
       if (finding.detail.length > 0) lines.push(`   ${finding.detail}`, "");
     });
   }

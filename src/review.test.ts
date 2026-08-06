@@ -39,7 +39,7 @@ describe("parseFindings", () => {
       parseFindings(
         '{"findings":[{"file":"a.ts","line":12,"title":"Leak","detail":"Handle never closed."}]}',
       ),
-      [{ file: "a.ts", line: 12, title: "Leak", detail: "Handle never closed." }],
+      [{ file: "a.ts", line: 12, title: "Leak", detail: "Handle never closed.", severity: "medium" }],
     );
   });
 
@@ -54,6 +54,19 @@ describe("parseFindings", () => {
   it("defaults a missing line to zero instead of NaN", () => {
     // NaN would render as "a.ts:NaN" in the posted comment.
     assert.equal(parseFindings('{"findings":[{"file":"a.ts","title":"x"}]}')[0]?.line, 0);
+  });
+
+  it("reads a valid severity and defaults anything else to medium", () => {
+    const findings = parseFindings(
+      '{"findings":[{"file":"a.ts","title":"x","severity":"high"},{"file":"b.ts","title":"y","severity":"catastrophic"},{"file":"c.ts","title":"z"}]}',
+    );
+    // Defaulting to high would let a silent omission block merges under a
+    // future gate; defaulting to low would bury real findings. Medium is the
+    // only neutral reading of "the model did not say".
+    assert.deepEqual(
+      findings.map((finding) => finding.severity),
+      ["high", "medium", "medium"],
+    );
   });
 
   it("returns empty for a non-list findings field", () => {
@@ -120,7 +133,8 @@ describe("truncateDiff", () => {
 });
 
 describe("dedupeFindings", () => {
-  const finding = (file: string, title: string) => ({ file, line: 10, title, detail: "d" });
+  const finding = (file: string, title: string) =>
+    ({ file, line: 10, title, detail: "d", severity: "medium" }) as const;
 
   it("merges the same defect reported across several files", () => {
     // Verbatim titles from a real run: one test-harness claim posted three
@@ -145,8 +159,8 @@ describe("dedupeFindings", () => {
   it("keeps the first title and detail as the group's face", () => {
     // Generation orders by severity, so the phrasing the model led with wins.
     const grouped = dedupeFindings([
-      { file: "a.ts", line: 1, title: "Leak on close", detail: "first" },
-      { file: "b.ts", line: 2, title: "Leak on close", detail: "second phrasing" },
+      { file: "a.ts", line: 1, title: "Leak on close", detail: "first", severity: "high" },
+      { file: "b.ts", line: 2, title: "Leak on close", detail: "second phrasing", severity: "low" },
     ]);
     assert.equal(grouped[0]?.detail, "first");
   });
@@ -165,7 +179,7 @@ describe("formatReviewComment", () => {
 
   it("renders file and line for each finding", () => {
     const comment = formatReviewComment({
-      findings: [{ file: "a.ts", line: 12, title: "Leak", detail: "Handle never closed." }],
+      findings: [{ file: "a.ts", line: 12, title: "Leak", detail: "Handle never closed.", severity: "medium" }],
       model: "m",
       truncated: false,
     });
@@ -176,12 +190,26 @@ describe("formatReviewComment", () => {
 
   it("omits the line suffix when the model gave no line", () => {
     const comment = formatReviewComment({
-      findings: [{ file: "a.ts", line: 0, title: "Leak", detail: "" }],
+      findings: [{ file: "a.ts", line: 0, title: "Leak", detail: "", severity: "low" }],
       model: "m",
       truncated: false,
     });
     assert.match(comment, /`a\.ts`/);
     assert.doesNotMatch(comment, /:0/);
+  });
+
+  it("renders severity and orders high above low regardless of arrival order", () => {
+    const comment = formatReviewComment({
+      findings: [
+        { file: "b.ts", line: 2, title: "Doc mismatch", detail: "", severity: "low" },
+        { file: "a.ts", line: 1, title: "Data loss", detail: "", severity: "high" },
+      ],
+      model: "m",
+      truncated: false,
+    });
+    assert.match(comment, /severity: high/);
+    // The gate-relevant finding must lead the list.
+    assert.ok(comment.indexOf("Data loss") < comment.indexOf("Doc mismatch"));
   });
 
   it("discloses truncation rather than silently reviewing part of a diff", () => {
