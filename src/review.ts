@@ -274,6 +274,16 @@ export function buildRefutePrompt(input: {
   readonly finding: ReviewFinding;
   readonly diff: string;
   /**
+   * Full contents of the changed files, for the panel only.
+   *
+   * The generator does not get this by default — measured, it suppresses
+   * candidate volume — but the panel only verifies, and its confirmed
+   * high-severity false positive ("state.license is never refreshed") was
+   * refutable by a line sitting in a changed file the panel could not see.
+   * Universal negatives about nearby code are checkable exactly here.
+   */
+  readonly context?: string | null;
+  /**
    * Sits between the diff and the claim: identical for every vote on a pull
    * request, so it extends the shared cacheable prefix rather than breaking
    * it, and it puts file-existence facts inside the panel's evidence — the
@@ -287,6 +297,9 @@ export function buildRefutePrompt(input: {
     "```diff",
     input.diff,
     "```",
+    ...(input.context
+      ? ["", "Full contents of the changed files, for verifying claims about them:", "", input.context]
+      : []),
     ...(input.inventory ? ["", input.inventory] : []),
     "",
     `Claimed finding in ${input.finding.file} at line ${input.finding.line}:`,
@@ -591,12 +604,18 @@ async function runPanel(input: {
   readonly candidates: ReadonlyArray<ReviewFinding>;
   readonly diff: string;
   readonly inventory?: string | null;
+  readonly context?: string | null;
   /** The panel's provider — may differ from the generator's. */
   readonly provider: ResolvedReviewProvider;
   readonly onProgress: (message: string) => void;
 }): Promise<ReadonlyArray<AdjudicatedFinding>> {
   const prompts = input.candidates.map((finding) =>
-    buildRefutePrompt({ finding, diff: input.diff, inventory: input.inventory ?? null }),
+    buildRefutePrompt({
+      finding,
+      diff: input.diff,
+      inventory: input.inventory ?? null,
+      context: input.context ?? null,
+    }),
   );
   const tasks = input.candidates.flatMap((_, findingIndex) =>
     Array.from({ length: REFUTATION_PANEL_SIZE }, (_, seat) => ({ findingIndex, seat })),
@@ -668,8 +687,10 @@ export interface DiffReviewResult {
 export async function reviewDiff(input: {
   readonly diff: string;
   readonly conventions: string | null;
-  /** Full changed-file contents; find-stage only. See src/context.ts. */
+  /** Full changed-file contents for the GENERATOR; measured to suppress candidate volume, so callers gate it behind --context. */
   readonly context?: string | null;
+  /** Full changed-file contents for the PANEL; verification-only evidence, on by default in callers. */
+  readonly panelContext?: string | null;
   /** Tracked-file inventory for the touched directories; see src/inventory.ts. */
   readonly inventory?: string | null;
   readonly provider: ResolvedReviewProvider;
@@ -720,6 +741,7 @@ export async function reviewDiff(input: {
     candidates,
     diff: input.diff,
     inventory: input.inventory ?? null,
+    context: input.panelContext ?? null,
     provider: input.refuteProvider ?? input.provider,
     onProgress: note,
   });

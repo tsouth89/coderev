@@ -278,9 +278,7 @@ export async function runBenchmark(input: {
       diffs.set(benchmarkCase.pr, truncateDiff(raw).diff);
       contexts.set(
         benchmarkCase.pr,
-        input.withContext === true
-          ? await fetchPullRequestContext(String(benchmarkCase.pr), input.cwd, note)
-          : null,
+        await fetchPullRequestContext(String(benchmarkCase.pr), input.cwd, note),
       );
     } catch (cause) {
       unfetchable.push(benchmarkCase.pr);
@@ -320,7 +318,8 @@ export async function runBenchmark(input: {
       const result = await reviewDiff({
         diff,
         conventions: null,
-        context: contexts.get(benchmarkCase.pr) ?? null,
+        context: input.withContext === true ? (contexts.get(benchmarkCase.pr) ?? null) : null,
+        panelContext: contexts.get(benchmarkCase.pr) ?? null,
         inventory: await buildFileInventory(diff, input.cwd),
         provider,
         ...(input.refuteProvider ? { refuteProvider: input.refuteProvider } : {}),

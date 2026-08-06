@@ -83,10 +83,10 @@ async function main(): Promise<number> {
         })
       : null;
 
-  const context =
-    values.context === true
-      ? await fetchPullRequestContext(pr, cwd, (message) => console.log(message))
-      : null;
+  // Fetched once, used twice: the panel always gets it (verification evidence
+  // for claims about nearby code), the generator only behind --context.
+  const fullContext = await fetchPullRequestContext(pr, cwd, (message) => console.log(message));
+  const context = values.context === true ? fullContext : null;
 
   // Always on: a few KB that closes the file-existence false-positive class.
   const inventory = await buildFileInventory(diff, cwd);
@@ -100,6 +100,7 @@ async function main(): Promise<number> {
     diff,
     conventions,
     context,
+    panelContext: fullContext,
     inventory,
     provider,
     ...(refuteProvider ? { refuteProvider } : {}),

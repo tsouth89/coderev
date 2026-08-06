@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  buildRefutePrompt,
   dedupeFindings,
   extractJsonObject,
   formatReviewComment,
@@ -129,6 +130,37 @@ describe("truncateDiff", () => {
 
   it("flags truncation so the comment can disclose it", () => {
     assert.deepEqual(truncateDiff("abcdef", 3), { diff: "abc", truncated: true });
+  });
+});
+
+describe("buildRefutePrompt", () => {
+  const finding = {
+    file: "a.rs",
+    line: 1172,
+    title: "state.license is never refreshed",
+    detail: "d",
+    severity: "high",
+  } as const;
+
+  it("places panel context between the diff and the claim", () => {
+    // The shared cacheable prefix is diff + context + inventory; only the
+    // claim varies per finding. Context after the claim would still be read,
+    // but ahead of it every vote on the PR shares one prefix.
+    const prompt = buildRefutePrompt({
+      finding,
+      diff: "DIFF",
+      context: "fn refresh() { reload_license(); }",
+      inventory: "INV",
+    });
+    const contextAt = prompt.indexOf("refresh()");
+    assert.ok(contextAt > prompt.indexOf("DIFF"));
+    assert.ok(contextAt < prompt.indexOf("Claimed finding"));
+    assert.match(prompt, /for verifying claims about them/);
+  });
+
+  it("omits the context section entirely when there is none", () => {
+    const prompt = buildRefutePrompt({ finding, diff: "DIFF" });
+    assert.doesNotMatch(prompt, /verifying claims/);
   });
 });
 
