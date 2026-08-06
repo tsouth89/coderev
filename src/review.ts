@@ -414,6 +414,41 @@ export function survivesPanel(verdicts: ReadonlyArray<RefutationVerdict>): boole
   return refutedCount * 2 <= verdicts.length - 1;
 }
 
+/**
+ * Files whose diffs are machine-written: reviewing them bills large token
+ * counts for near-certain noise. Production produced a severity:high finding
+ * on line 1000 of a pnpm-lock.yaml — a file no human edits — and lockfile
+ * hunks routinely run to thousands of lines that then ride every panel vote.
+ */
+const GENERATED_FILE_PATTERN =
+  /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|go\.sum|composer\.lock|Gemfile\.lock)$|\.(min\.js|min\.css|map|lock)$/;
+
+/**
+ * Drop generated-file hunks from a diff, disclosing what was dropped so the
+ * model knows dependency changes happened without reading their lockfiles.
+ */
+export function stripGeneratedHunks(diff: string): {
+  readonly diff: string;
+  readonly stripped: ReadonlyArray<string>;
+} {
+  const sections = diff.split(/^(?=diff --git )/m);
+  const kept: Array<string> = [];
+  const stripped: Array<string> = [];
+  for (const section of sections) {
+    const match = section.match(/^diff --git a\/.+? b\/(.+)$/m);
+    const path = match?.[1];
+    if (path !== undefined && GENERATED_FILE_PATTERN.test(path)) {
+      stripped.push(path);
+      continue;
+    }
+    kept.push(section);
+  }
+  if (stripped.length === 0) return { diff, stripped };
+  const notice = `(Generated files changed but omitted from this diff: ${stripped.join(", ")})
+`;
+  return { diff: notice + kept.join(""), stripped };
+}
+
 export function truncateDiff(
   diff: string,
   limit: number = MAX_DIFF_CHARACTERS,

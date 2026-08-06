@@ -17,6 +17,7 @@ import {
 } from "../src/provider.ts";
 import {
   formatReviewComment,
+  stripGeneratedHunks,
   parsePreviousState,
   reviewDiff,
   truncateDiff,
@@ -96,7 +97,11 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  const { diff, truncated } = truncateDiff(rawDiff);
+  const { diff: strippedDiff, stripped } = stripGeneratedHunks(rawDiff);
+  if (stripped.length > 0) {
+    console.log(`Omitting generated files from review: ${stripped.join(", ")}`);
+  }
+  const { diff, truncated } = truncateDiff(strippedDiff);
   if (truncated) console.warn(`Diff truncated to ${MAX_DIFF_CHARACTERS} characters.`);
 
   const conventions =

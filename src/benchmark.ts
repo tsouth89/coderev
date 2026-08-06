@@ -30,7 +30,7 @@ import {
   type ResolvedReviewProvider,
   type TokenUsage,
 } from "./provider.ts";
-import { reviewDiff, truncateDiff } from "./review.ts";
+import { reviewDiff, stripGeneratedHunks, truncateDiff } from "./review.ts";
 
 export interface BaselineFinding {
   readonly file: string;
@@ -280,7 +280,7 @@ export async function runBenchmark(input: {
   for (const benchmarkCase of cases) {
     try {
       const raw = await fetchPullRequestDiff(String(benchmarkCase.pr), input.cwd);
-      diffs.set(benchmarkCase.pr, truncateDiff(raw).diff);
+      diffs.set(benchmarkCase.pr, truncateDiff(stripGeneratedHunks(raw).diff).diff);
       contexts.set(
         benchmarkCase.pr,
         await fetchPullRequestContext(String(benchmarkCase.pr), input.cwd, note),
