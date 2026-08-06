@@ -80,17 +80,30 @@ const PANEL_CONCURRENCY = 8;
  * panel. Every seat must vote every ground; the lens only says where to dig
  * hardest.
  */
+export const LENS_JURISDICTION_NOTE =
+  "Your focus adds scrutiny; it does not narrow your duty. If the claim fails " +
+  "ANY of the listed grounds, refute it, whether or not that ground is your focus.";
+
 export const REFUTE_LENSES: ReadonlyArray<string> = [
   [
     "Your assigned focus for this vote: CHECKABILITY. Does the claim name the",
     "concrete input, state, or sequence that triggers the failure? If it only",
     "says something 'may', 'could', or 'potentially' happens without saying",
-    "when, refute it on that ground.",
+    "when, refute it on that ground. Be hardest on predictions: a claim that",
+    "something 'will fail' or 'will break CI' is only as good as its verified",
+    "mechanism — every confirmed false positive so far was a confident",
+    "prediction, not a description of what the code does.",
+    LENS_JURISDICTION_NOTE,
   ].join("\n"),
   [
     "Your assigned focus for this vote: MECHANISM ACCURACY. Re-read the",
     "relevant hunks and trace what the code actually does. If the code's real",
     "behaviour differs from what the claim describes, refute it on that ground.",
+    "When code generates code (templates, embedded JSON.stringify, eval), trace",
+    "each layer separately: a mechanism true at one layer is often false at",
+    "another, and a confirmed false high survived because the claim and its",
+    "check both reasoned one layer short.",
+    LENS_JURISDICTION_NOTE,
   ].join("\n"),
   [
     "Your assigned focus for this vote: SCOPE AND INTENT. Is the issue on lines",
@@ -99,6 +112,7 @@ export const REFUTE_LENSES: ReadonlyArray<string> = [
     "justifies? Did the code being replaced have the same flaw, making it",
     "pre-existing? Would a compiler, type checker, or linter already catch it?",
     "If any of these hold, refute it on that ground.",
+    LENS_JURISDICTION_NOTE,
   ].join("\n"),
 ];
 

@@ -6,10 +6,12 @@ import {
   dedupeFindings,
   extractJsonObject,
   formatReviewComment,
+  LENS_JURISDICTION_NOTE,
   parseFindings,
   parsePreviousState,
   parseVerdict,
   REFUTATION_PANEL_SIZE,
+  REFUTE_LENSES,
   REVIEW_COMMENT_MARKER,
   survivesPanel,
   truncateDiff,
@@ -97,6 +99,23 @@ describe("parseVerdict", () => {
 
   it("treats a missing refuted field as refuted", () => {
     assert.equal(parseVerdict('{"reason":"maybe"}').refuted, true);
+  });
+});
+
+describe("REFUTE_LENSES", () => {
+  it("every seat carries the jurisdiction note", () => {
+    // This invariant was silently lost once: a patch rewrote only the doc
+    // comment while the commit message claimed the behavioural fix, and the
+    // panel ran seat-exclusive lenses through three config versions. A lens
+    // without this note breaks the arithmetic — a finding failing only one
+    // ground loses exactly one vote and survives 1-2 by construction.
+    assert.equal(REFUTE_LENSES.length, REFUTATION_PANEL_SIZE);
+    for (const lens of REFUTE_LENSES) {
+      assert.ok(
+        lens.includes(LENS_JURISDICTION_NOTE),
+        `lens missing jurisdiction note: ${lens.slice(0, 60)}`,
+      );
+    }
   });
 });
 
