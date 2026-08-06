@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 
 import { parse, reportFailure, requireString } from "../src/args.ts";
 import { fetchPullRequestContext } from "../src/context.ts";
+import { buildFileInventory } from "../src/inventory.ts";
 import { fetchPullRequestDiff, upsertPullRequestComment } from "../src/github.ts";
 import { estimateCostUsd, resolveRefuteProvider, resolveReviewProvider } from "../src/provider.ts";
 import {
@@ -87,6 +88,9 @@ async function main(): Promise<number> {
       ? await fetchPullRequestContext(pr, cwd, (message) => console.log(message))
       : null;
 
+  // Always on: a few KB that closes the file-existence false-positive class.
+  const inventory = await buildFileInventory(diff, cwd);
+
   console.log(
     `Reviewing PR ${pr} with ${provider.model}` +
       (refuteProvider ? ` (panel: ${refuteProvider.model})` : "") +
@@ -96,6 +100,7 @@ async function main(): Promise<number> {
     diff,
     conventions,
     context,
+    inventory,
     provider,
     ...(refuteProvider ? { refuteProvider } : {}),
     onProgress: (message) => console.log(message),

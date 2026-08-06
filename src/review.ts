@@ -246,12 +246,15 @@ export function buildFindPrompt(input: {
   readonly diff: string;
   readonly conventions: string | null;
   readonly context?: string | null;
+  /** Tracked files near the diff; resolves file-existence claims at source. */
+  readonly inventory?: string | null;
 }): string {
   const conventions = input.conventions ? `Repository conventions:\n\n${input.conventions}\n\n` : "";
+  const inventory = input.inventory ? `${input.inventory}\n\n` : "";
   const context = input.context
     ? `Full contents of the changed files, for context (the diff below is what you are reviewing):\n\n${input.context}\n\n`
     : "";
-  return `${conventions}${context}Review this diff.\n\n\`\`\`diff\n${input.diff}\n\`\`\``;
+  return `${conventions}${inventory}${context}Review this diff.\n\n\`\`\`diff\n${input.diff}\n\`\`\``;
 }
 
 /**
@@ -270,12 +273,21 @@ export function buildFindPrompt(input: {
 export function buildRefutePrompt(input: {
   readonly finding: ReviewFinding;
   readonly diff: string;
+  /**
+   * Sits between the diff and the claim: identical for every vote on a pull
+   * request, so it extends the shared cacheable prefix rather than breaking
+   * it, and it puts file-existence facts inside the panel's evidence — the
+   * one confirmed post-lens-fix false positive survived precisely because
+   * that fact lived outside the diff.
+   */
+  readonly inventory?: string | null;
 }): string {
   return [
     "The diff under review:",
     "```diff",
     input.diff,
     "```",
+    ...(input.inventory ? ["", input.inventory] : []),
     "",
     `Claimed finding in ${input.finding.file} at line ${input.finding.line}:`,
     input.finding.title,
@@ -578,12 +590,13 @@ ${input.lens}`,
 async function runPanel(input: {
   readonly candidates: ReadonlyArray<ReviewFinding>;
   readonly diff: string;
+  readonly inventory?: string | null;
   /** The panel's provider — may differ from the generator's. */
   readonly provider: ResolvedReviewProvider;
   readonly onProgress: (message: string) => void;
 }): Promise<ReadonlyArray<AdjudicatedFinding>> {
   const prompts = input.candidates.map((finding) =>
-    buildRefutePrompt({ finding, diff: input.diff }),
+    buildRefutePrompt({ finding, diff: input.diff, inventory: input.inventory ?? null }),
   );
   const tasks = input.candidates.flatMap((_, findingIndex) =>
     Array.from({ length: REFUTATION_PANEL_SIZE }, (_, seat) => ({ findingIndex, seat })),
@@ -657,6 +670,8 @@ export async function reviewDiff(input: {
   readonly conventions: string | null;
   /** Full changed-file contents; find-stage only. See src/context.ts. */
   readonly context?: string | null;
+  /** Tracked-file inventory for the touched directories; see src/inventory.ts. */
+  readonly inventory?: string | null;
   readonly provider: ResolvedReviewProvider;
   /**
    * Provider for the refutation panel; defaults to `provider`. Split because
@@ -679,6 +694,7 @@ export async function reviewDiff(input: {
         diff: input.diff,
         conventions: input.conventions,
         context: input.context ?? null,
+        inventory: input.inventory ?? null,
       }),
       temperature: FIND_TEMPERATURE,
       onRetry: (message) => note(`  retry: ${message}`),
@@ -703,6 +719,7 @@ export async function reviewDiff(input: {
   const adjudicated = await runPanel({
     candidates,
     diff: input.diff,
+    inventory: input.inventory ?? null,
     provider: input.refuteProvider ?? input.provider,
     onProgress: note,
   });

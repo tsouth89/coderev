@@ -21,6 +21,7 @@
  * costs model tokens rather than another pass over GitHub.
  */
 import { fetchPullRequestContext } from "./context.ts";
+import { buildFileInventory } from "./inventory.ts";
 import { fetchPullRequestDiff } from "./github.ts";
 import {
   addUsage,
@@ -320,6 +321,7 @@ export async function runBenchmark(input: {
         diff,
         conventions: null,
         context: contexts.get(benchmarkCase.pr) ?? null,
+        inventory: await buildFileInventory(diff, input.cwd),
         provider,
         ...(input.refuteProvider ? { refuteProvider: input.refuteProvider } : {}),
         // Without this a review is four silent minutes, and a ten-PR run looks
