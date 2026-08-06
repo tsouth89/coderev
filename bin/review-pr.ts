@@ -4,7 +4,11 @@ import { readFile } from "node:fs/promises";
 import { parse, reportFailure, requireString } from "../src/args.ts";
 import { fetchPullRequestContext } from "../src/context.ts";
 import { buildFileInventory } from "../src/inventory.ts";
-import { fetchPullRequestDiff, upsertPullRequestComment } from "../src/github.ts";
+import {
+  fetchExistingReviewComment,
+  fetchPullRequestDiff,
+  upsertPullRequestComment,
+} from "../src/github.ts";
 import {
   estimateCostUsd,
   resolveFind2Provider,
@@ -13,6 +17,7 @@ import {
 } from "../src/provider.ts";
 import {
   formatReviewComment,
+  parsePreviousState,
   reviewDiff,
   truncateDiff,
   MAX_DIFF_CHARACTERS,
@@ -153,7 +158,13 @@ async function main(): Promise<number> {
     throw new Error(`Review did not run: ${generationError}`);
   }
 
-  const comment = formatReviewComment({ findings, model: provider.model, truncated });
+  const previousBody = await fetchExistingReviewComment({
+    pr,
+    marker: REVIEW_COMMENT_MARKER,
+    ...(cwd === undefined ? {} : { cwd }),
+  });
+  const previous = previousBody === null ? null : parsePreviousState(previousBody);
+  const comment = formatReviewComment({ findings, model: provider.model, truncated, previous });
   if (values.post !== true) {
     console.log(`\n${comment}`);
     return 0;

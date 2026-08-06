@@ -95,8 +95,10 @@ export const REFUTE_LENSES: ReadonlyArray<string> = [
   [
     "Your assigned focus for this vote: SCOPE AND INTENT. Is the issue on lines",
     "this diff modifies? Is it the change's intended behaviour restated as a",
-    "defect? Would a compiler, type checker, or linter already catch it? If any",
-    "of these hold, refute it on that ground.",
+    "defect? Is it a trade-off an adjacent code comment already documents and",
+    "justifies? Did the code being replaced have the same flaw, making it",
+    "pre-existing? Would a compiler, type checker, or linter already catch it?",
+    "If any of these hold, refute it on that ground.",
   ].join("\n"),
 ];
 
@@ -175,6 +177,10 @@ export const FIND_SYSTEM_PROMPT = [
   "- Style preferences not stated in the repository conventions.",
   "- Issues on lines the diff does not modify.",
   "- Restating what the change is intended to do as though it were a defect.",
+  "- A trade-off that an adjacent code comment already documents and justifies.",
+  "  The comment is the author answering you in advance; read it before flagging.",
+  "- Defects that pre-date this diff: if the code being replaced or extended had",
+  "  the same flaw, it is pre-existing even when the diff touches those lines.",
   "",
   "Rate each finding's severity:",
   '- "high": incorrect behaviour, data loss, crash, or security hole that will bite',
@@ -405,6 +411,80 @@ export function truncateDiff(
 export const REVIEW_COMMENT_MARKER = "<!-- coderev -->";
 
 /**
+ * Machine-readable state embedded in the posted comment, base64 so no JSON
+ * character sequence can terminate the HTML comment.
+ *
+ * The upserted comment persists across pushes, which makes it the natural
+ * memory between passes. Without it every re-review presented its findings as
+ * if seen for the first time: a measured pass on a 25-line follow-up fix
+ * reported nine findings of which the author judged two actionable, largely
+ * re-flagging the neighbourhood the previous pass had already covered.
+ */
+const STATE_PATTERN = /<!-- coderev:state:v1 ([A-Za-z0-9+/=]+) -->/;
+
+export interface PreviousFinding {
+  readonly file: string;
+  readonly line: number;
+  readonly title: string;
+  readonly severity: FindingSeverity;
+}
+
+export function embedState(findings: ReadonlyArray<PreviousFinding>): string {
+  const payload = findings.map(({ file, line, title, severity }) => ({
+    file,
+    line,
+    title,
+    severity,
+  }));
+  const encoded = Buffer.from(JSON.stringify({ findings: payload }), "utf8").toString("base64");
+  return `<!-- coderev:state:v1 ${encoded} -->`;
+}
+
+/** Previous pass's findings out of an existing comment body, or null. */
+export function parsePreviousState(body: string): ReadonlyArray<PreviousFinding> | null {
+  const match = body.match(STATE_PATTERN);
+  if (!match?.[1]) return null;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(match[1], "base64").toString("utf8"));
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const list = (parsed as Record<string, unknown>).findings;
+    if (!Array.isArray(list)) return null;
+    const findings: Array<PreviousFinding> = [];
+    for (const entry of list) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const record = entry as Record<string, unknown>;
+      if (typeof record.file !== "string" || typeof record.title !== "string") continue;
+      const severity = record.severity;
+      findings.push({
+        file: record.file,
+        line: typeof record.line === "number" ? record.line : 0,
+        title: record.title,
+        severity:
+          severity === "high" || severity === "medium" || severity === "low"
+            ? severity
+            : "medium",
+      });
+    }
+    return findings;
+  } catch {
+    return null;
+  }
+}
+
+/** Same-concern test across passes: same file, similar title — the pre-panel dedupe rule. */
+export function matchesPrevious(
+  finding: { readonly file: string; readonly title: string },
+  previous: ReadonlyArray<PreviousFinding>,
+): boolean {
+  const tokens = titleTokens(finding.title);
+  return previous.some(
+    (entry) =>
+      entry.file === finding.file &&
+      jaccard(titleTokens(entry.title), tokens) >= DEDUPE_SIMILARITY_THRESHOLD,
+  );
+}
+
+/**
  * Words that carry no identity: with them included, two phrasings of the same
  * defect ("teardown hangs due to .cmd shim" / "teardown test hangs on
  * Windows") score as different findings.
@@ -513,6 +593,8 @@ export function formatReviewComment(input: {
   readonly findings: ReadonlyArray<ReviewFinding>;
   readonly model: string;
   readonly truncated: boolean;
+  /** Previous pass's findings; enables new / still-open / resolved sectioning. */
+  readonly previous?: ReadonlyArray<PreviousFinding> | null;
 }): string {
   const lines = [REVIEW_COMMENT_MARKER, "", "### Automated review", ""];
 
@@ -526,19 +608,68 @@ export function formatReviewComment(input: {
         a.index - b.index,
     )
     .map((entry) => entry.finding);
+  const previous = input.previous ?? null;
+  const isCarried = (finding: GroupedFinding): boolean =>
+    previous !== null &&
+    finding.locations.some((location) =>
+      matchesPrevious({ file: location.file, title: finding.title }, previous),
+    );
+  const fresh = previous === null ? grouped : grouped.filter((finding) => !isCarried(finding));
+  const carried = previous === null ? [] : grouped.filter(isCarried);
+  const resolved =
+    previous === null
+      ? []
+      : previous.filter(
+          (entry) =>
+            !grouped.some((finding) =>
+              finding.locations.some((location) =>
+                matchesPrevious({ file: location.file, title: finding.title }, [entry]),
+              ),
+            ),
+        );
+
+  const renderFull = (finding: GroupedFinding, index: number) => {
+    lines.push(`${index + 1}. **${finding.title}**`, "");
+    const rendered = finding.locations
+      .map((location) => `\`${location.file}\`${location.line > 0 ? `:${location.line}` : ""}`)
+      .join(", ");
+    lines.push(`   ${rendered} \u00b7 severity: ${finding.severity}`, "");
+    if (finding.detail.length > 0) lines.push(`   ${finding.detail}`, "");
+  };
+
   if (grouped.length === 0) {
     lines.push("No blocking issues found.");
-  } else {
+    if (resolved.length > 0) {
+      lines.push("", `Resolved since the previous pass: ${resolved.length}.`);
+    }
+  } else if (previous === null) {
     const noun = grouped.length === 1 ? "issue" : "issues";
     lines.push(`Found ${grouped.length} ${noun}:`, "");
-    grouped.forEach((finding, index) => {
-      lines.push(`${index + 1}. **${finding.title}**`, "");
-      const rendered = finding.locations
-        .map((location) => `\`${location.file}\`${location.line > 0 ? `:${location.line}` : ""}`)
-        .join(", ");
-      lines.push(`   ${rendered} \u00b7 severity: ${finding.severity}`, "");
-      if (finding.detail.length > 0) lines.push(`   ${finding.detail}`, "");
-    });
+    grouped.forEach(renderFull);
+  } else {
+    // Re-review of a PR this tool has already commented on. Findings the
+    // previous pass reported stay visible — hiding an unresolved high would be
+    // the false all-clear again, quieter — but compactly, so the reader's
+    // attention lands on what changed.
+    if (fresh.length > 0) {
+      const noun = fresh.length === 1 ? "issue" : "issues";
+      lines.push(`New in this pass: ${fresh.length} ${noun}.`, "");
+      fresh.forEach(renderFull);
+    } else {
+      lines.push("Nothing new in this pass.");
+    }
+    if (carried.length > 0) {
+      lines.push("", `Still open from the previous pass:`, "");
+      for (const finding of carried) {
+        const where = finding.locations
+          .map((location) => `\`${location.file}\`${location.line > 0 ? `:${location.line}` : ""}`)
+          .join(", ");
+        lines.push(`- **${finding.title}** \u2014 ${where} \u00b7 ${finding.severity}`);
+      }
+    }
+    if (resolved.length > 0) {
+      lines.push("", `Resolved since the previous pass: ${resolved.length}.`);
+    }
   }
 
   if (input.truncated) {
@@ -547,6 +678,17 @@ export function formatReviewComment(input: {
   lines.push(
     "",
     `<sub>Advisory. Generated by \`${input.model}\` and filtered through a ${REFUTATION_PANEL_SIZE}-vote refutation panel.</sub>`,
+    "",
+    embedState(
+      grouped.flatMap((finding) =>
+        finding.locations.map((location) => ({
+          file: location.file,
+          line: location.line,
+          title: finding.title,
+          severity: finding.severity,
+        })),
+      ),
+    ),
   );
   return lines.join("\n");
 }

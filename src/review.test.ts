@@ -7,6 +7,7 @@ import {
   extractJsonObject,
   formatReviewComment,
   parseFindings,
+  parsePreviousState,
   parseVerdict,
   REFUTATION_PANEL_SIZE,
   REVIEW_COMMENT_MARKER,
@@ -226,6 +227,77 @@ describe("dedupeFindings", () => {
       { file: "b.ts", line: 2, title: "Leak on close", detail: "second phrasing", severity: "low" },
     ]);
     assert.equal(grouped[0]?.detail, "first");
+  });
+});
+
+describe("pass-over-pass state", () => {
+  const finding = (file: string, title: string, severity: "high" | "medium" | "low") => ({
+    file,
+    line: 40,
+    title,
+    detail: "d",
+    severity,
+  });
+
+  it("round-trips findings through the embedded state block", () => {
+    const comment = formatReviewComment({
+      findings: [finding("a.ts", "Unordered writes race", "high")],
+      model: "m",
+      truncated: false,
+    });
+    const previous = parsePreviousState(comment);
+    assert.equal(previous?.length, 1);
+    assert.partialDeepStrictEqual(previous?.[0], {
+      file: "a.ts",
+      title: "Unordered writes race",
+      severity: "high",
+    });
+  });
+
+  it("splits a re-pass into new, still-open, and resolved", () => {
+    const first = formatReviewComment({
+      findings: [
+        finding("a.ts", "Unordered writes race", "high"),
+        finding("b.ts", "Handle leaked on early return", "medium"),
+      ],
+      model: "m",
+      truncated: false,
+    });
+    const second = formatReviewComment({
+      findings: [
+        finding("a.ts", "Race condition from unordered writes", "high"), // rephrased carry
+        finding("c.ts", "Timer never cancelled", "high"), // new
+      ],
+      model: "m",
+      truncated: false,
+      previous: parsePreviousState(first),
+    });
+    assert.match(second, /New in this pass: 1 issue\./);
+    assert.match(second, /Timer never cancelled/);
+    assert.match(second, /Still open from the previous pass:/);
+    assert.match(second, /Unordered writes race|Race condition from unordered writes/);
+    // b.ts's finding is gone this pass.
+    assert.match(second, /Resolved since the previous pass: 1\./);
+  });
+
+  it("reports a clean re-pass as resolutions, not silence", () => {
+    const first = formatReviewComment({
+      findings: [finding("a.ts", "Unordered writes race", "high")],
+      model: "m",
+      truncated: false,
+    });
+    const second = formatReviewComment({
+      findings: [],
+      model: "m",
+      truncated: false,
+      previous: parsePreviousState(first),
+    });
+    assert.match(second, /No blocking issues found\./);
+    assert.match(second, /Resolved since the previous pass: 1\./);
+  });
+
+  it("returns null state from a body without a state block", () => {
+    assert.equal(parsePreviousState("<!-- coderev -->\nold format comment"), null);
   });
 });
 

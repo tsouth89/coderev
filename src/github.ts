@@ -104,6 +104,33 @@ export async function resolvePullRequestNumber(pr: string, cwd?: string): Promis
   return number;
 }
 
+/** Body of the existing review comment (by marker prefix), or null. */
+export async function fetchExistingReviewComment(input: {
+  readonly pr: string;
+  readonly marker: string;
+  readonly cwd?: string;
+}): Promise<string | null> {
+  try {
+    const number = await resolvePullRequestNumber(input.pr, input.cwd);
+    const body = await gh(
+      [
+        "api",
+        `repos/{owner}/{repo}/issues/${number}/comments?per_page=100`,
+        "--paginate",
+        "--jq",
+        `[.[] | select(.body | startswith("${input.marker}"))][0].body // ""`,
+      ],
+      input.cwd,
+    );
+    const trimmed = body.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    // Pass memory is an enhancement; a failed lookup falls back to a
+    // first-pass-style comment rather than a failed review.
+    return null;
+  }
+}
+
 /**
  * Post the review comment, or edit the existing one in place.
  *
