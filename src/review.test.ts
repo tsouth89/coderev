@@ -182,6 +182,51 @@ describe("unionCandidates", () => {
     );
     assert.equal(union.length, 2);
   });
+
+  it("merges nearby quarter-similar titles and keeps the higher severity", () => {
+    // Verbatim pair from a production scorecard: the same Esc-polling defect
+    // posted twice in one round, once at low and once at high. A duplicate
+    // must never launder a defect down to the rating that gets skimmed past.
+    const low = {
+      file: "src/scroll.rs",
+      line: 120,
+      title: "Polling may miss brief presses",
+      detail: "d",
+      severity: "low",
+      source: "m1",
+    } as const;
+    const high = {
+      file: "src/scroll.rs",
+      line: 118,
+      title: "Esc polling can miss a quick tap",
+      detail: "d",
+      severity: "high",
+      source: "m2",
+    } as const;
+    const union = unionCandidates([low], [high]);
+    assert.equal(union.length, 1);
+    assert.equal(union[0]?.severity, "high");
+  });
+
+  it("does not merge quarter-similar titles that are far apart in the file", () => {
+    const a = {
+      file: "src/scroll.rs",
+      line: 10,
+      title: "Polling may miss brief presses",
+      detail: "d",
+      severity: "low",
+      source: "m1",
+    } as const;
+    const b = {
+      file: "src/scroll.rs",
+      line: 900,
+      title: "Hotkey polling misses modifier state",
+      detail: "d",
+      severity: "medium",
+      source: "m2",
+    } as const;
+    assert.equal(unionCandidates([a], [b]).length, 2);
+  });
 });
 
 describe("buildRefutePrompt", () => {

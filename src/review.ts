@@ -102,7 +102,11 @@ export const REFUTE_LENSES: ReadonlyArray<string> = [
     "When code generates code (templates, embedded JSON.stringify, eval), trace",
     "each layer separately: a mechanism true at one layer is often false at",
     "another, and a confirmed false high survived because the claim and its",
-    "check both reasoned one layer short.",
+    "check both reasoned one layer short. When the claim asserts the RANGE of a",
+    "value another function returns, look for that function in your evidence and",
+    "check it — a confirmed false medium claimed a scale could be zero when the",
+    "callee clamps zero to 1.0 one call away. If the callee is not in evidence,",
+    "say so in your reason instead of assuming the range.",
     LENS_JURISDICTION_NOTE,
   ].join("\n"),
   [
@@ -195,13 +199,22 @@ export const FIND_SYSTEM_PROMPT = [
   "  The comment is the author answering you in advance; read it before flagging.",
   "- Defects that pre-date this diff: if the code being replaced or extended had",
   "  the same flaw, it is pre-existing even when the diff touches those lines.",
+  "- A pattern the surrounding code already uses at many unchanged call sites",
+  "  (unchecked handles, a pervasive style). That is a repo convention question,",
+  "  not a defect in this change.",
   "",
-  "Rate each finding's severity:",
-  '- "high": incorrect behaviour, data loss, crash, or security hole that will bite',
-  "  in realistic use. A reviewer should block the merge over it.",
-  '- "medium": a real defect with limited blast radius, or one needing an unusual',
-  "  but reachable condition.",
-  '- "low": defensive gaps, doc-versus-code mismatches, polish worth a follow-up.',
+  "Rate each finding's severity by OUTCOME on inputs that occur in practice, not",
+  "by how surprising the mechanism is:",
+  '- "high": data loss, corruption, crash, or a security hole, on realistic input.',
+  '- "medium": a feature silently does not work, or wrong-but-recoverable output.',
+  '- "low": cosmetic, diagnostic, defensive gaps, doc-versus-code mismatches.',
+  "If the triggering input cannot occur on real systems (impossible geometry,",
+  "values a checked invariant already excludes), cap the severity at low no",
+  "matter how correct the mechanism is: unreachable-but-true costs the reader",
+  "attention needed for reachable defects.",
+  "",
+  "Every finding MUST carry the new-file line number from the hunk it concerns.",
+  "A finding without a line cannot be navigated to or anchored.",
   "",
   "Report up to 10 findings, most severe first.",
   "",
@@ -247,6 +260,9 @@ export const REFUTE_SYSTEM_PROMPT = [
   "- The issue is on lines the diff does not modify.",
   "- A linter, type checker, or compiler would already catch it.",
   "- It restates the change's intended behaviour as though it were a defect.",
+  "- An adjacent code comment explicitly addresses and justifies the exact",
+  "  concern the claim raises. The author answered it in advance; read the",
+  "  comment above the code before letting the claim stand.",
   "- It names no checkable mechanism: it asserts something 'may' break or 'could'",
   "  be unsafe without saying which input, state, or sequence causes it. A claim",
   "  too vague to check is too vague to act on.",
@@ -562,6 +578,35 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 /** Titles sharing at least half their meaningful words are the same concern. */
 export const DEDUPE_SIMILARITY_THRESHOLD = 0.5;
 
+/** Looser title bar that applies only when the findings also sit near each other. */
+export const DEDUPE_NEARBY_SIMILARITY = 0.25;
+export const DEDUPE_NEARBY_LINES = 40;
+
+/**
+ * Same defect, phrased twice?
+ *
+ * Title similarity alone missed real pairs from a production scorecard:
+ * "Polling may miss brief presses" and "Esc polling can miss a quick tap"
+ * share two meaningful words (0.25 Jaccard), yet were the same defect posted
+ * at two severities in one round. Proximity supplies the missing signal: a
+ * quarter-similar title on the same file within a few dozen lines is the same
+ * concern, while a quarter-similar title elsewhere in the file is not.
+ */
+export function sameConcern(
+  a: { readonly file: string; readonly line: number; readonly title: string },
+  b: { readonly file: string; readonly line: number; readonly title: string },
+): boolean {
+  if (a.file !== b.file) return false;
+  const similarity = jaccard(titleTokens(a.title), titleTokens(b.title));
+  if (similarity >= DEDUPE_SIMILARITY_THRESHOLD) return true;
+  return (
+    similarity >= DEDUPE_NEARBY_SIMILARITY &&
+    a.line > 0 &&
+    b.line > 0 &&
+    Math.abs(a.line - b.line) <= DEDUPE_NEARBY_LINES
+  );
+}
+
 /**
  * Union two generators' candidates, dropping the second generator's near
  * duplicates before the panel sees them.
@@ -578,13 +623,17 @@ export function unionCandidates(
 ): Array<ReviewFinding> {
   const union = [...primary];
   for (const candidate of secondary) {
-    const candidateTokens = titleTokens(candidate.title);
-    const duplicate = union.some(
-      (existing) =>
-        existing.file === candidate.file &&
-        jaccard(titleTokens(existing.title), candidateTokens) >= DEDUPE_SIMILARITY_THRESHOLD,
-    );
-    if (!duplicate) union.push(candidate);
+    const existingIndex = union.findIndex((existing) => sameConcern(existing, candidate));
+    if (existingIndex === -1) {
+      union.push(candidate);
+      continue;
+    }
+    // Same concern at two severities keeps the higher one: a duplicate must
+    // never launder a defect down to the rating that gets skimmed past.
+    const existing = union[existingIndex];
+    if (existing && SEVERITY_ORDER[candidate.severity] < SEVERITY_ORDER[existing.severity]) {
+      union[existingIndex] = { ...existing, severity: candidate.severity };
+    }
   }
   return union;
 }
@@ -612,21 +661,27 @@ export interface GroupedFinding {
  * mega-group.
  */
 export function dedupeFindings(findings: ReadonlyArray<ReviewFinding>): Array<GroupedFinding> {
-  const groups: Array<{ head: Set<string>; grouped: GroupedFinding }> = [];
+  const groups: Array<{ head: ReviewFinding; grouped: GroupedFinding }> = [];
   for (const finding of findings) {
-    const tokens = titleTokens(finding.title);
     const existing = groups.find(
-      (group) => jaccard(group.head, tokens) >= DEDUPE_SIMILARITY_THRESHOLD,
+      (group) =>
+        jaccard(titleTokens(group.head.title), titleTokens(finding.title)) >=
+          DEDUPE_SIMILARITY_THRESHOLD || sameConcern(group.head, finding),
     );
     if (existing) {
       existing.grouped = {
         ...existing.grouped,
+        // The group's face keeps the highest severity any member carried.
+        severity:
+          SEVERITY_ORDER[finding.severity] < SEVERITY_ORDER[existing.grouped.severity]
+            ? finding.severity
+            : existing.grouped.severity,
         locations: [...existing.grouped.locations, { file: finding.file, line: finding.line }],
       };
       continue;
     }
     groups.push({
-      head: tokens,
+      head: finding,
       grouped: {
         title: finding.title,
         detail: finding.detail,
