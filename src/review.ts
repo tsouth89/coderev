@@ -534,15 +534,42 @@ export interface PreviousFinding {
   readonly severity: FindingSeverity;
 }
 
-export function embedState(findings: ReadonlyArray<PreviousFinding>): string {
+export function embedState(
+  findings: ReadonlyArray<PreviousFinding>,
+  diffHash?: string | null,
+): string {
   const payload = findings.map(({ file, line, title, severity }) => ({
     file,
     line,
     title,
     severity,
   }));
-  const encoded = Buffer.from(JSON.stringify({ findings: payload }), "utf8").toString("base64");
+  const encoded = Buffer.from(
+    JSON.stringify({ findings: payload, ...(diffHash ? { diffHash } : {}) }),
+    "utf8",
+  ).toString("base64");
   return `<!-- coderev:state:v1 ${encoded} -->`;
+}
+
+/**
+ * The diff hash the previous pass reviewed, for skipping no-op re-reviews.
+ *
+ * Cost is per-review, not per-pull-request: sessions push three to six times
+ * per PR and every push was a full re-review. A push that does not change the
+ * diff — rebases, merge-from-main, CI retries — now costs zero model calls
+ * instead of a complete generation-plus-panel cycle.
+ */
+export function parseStoredDiffHash(body: string): string | null {
+  const match = body.match(STATE_PATTERN);
+  if (!match?.[1]) return null;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(match[1], "base64").toString("utf8"));
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const hash = (parsed as Record<string, unknown>).diffHash;
+    return typeof hash === "string" && hash.length > 0 ? hash : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Previous pass's findings out of an existing comment body, or null. */
@@ -886,6 +913,8 @@ export function formatReviewComment(input: {
   readonly truncated: boolean;
   /** Previous pass's findings; enables new / still-open / resolved sectioning. */
   readonly previous?: ReadonlyArray<PreviousFinding> | null;
+  /** Hash of the reviewed diff, stored so an unchanged push can skip entirely. */
+  readonly diffHash?: string | null;
 }): string {
   const lines = [REVIEW_COMMENT_MARKER, "", "### Automated review", ""];
 
@@ -969,6 +998,7 @@ export function formatReviewComment(input: {
           severity: finding.severity,
         })),
       ),
+      input.diffHash ?? null,
     ),
   );
   return lines.join("\n");

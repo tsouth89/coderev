@@ -9,6 +9,7 @@ import {
   LENS_JURISDICTION_NOTE,
   parseFindings,
   parsePreviousState,
+  parseStoredDiffHash,
   parseVerdict,
   REFUTATION_PANEL_SIZE,
   REFUTE_LENSES,
@@ -388,6 +389,19 @@ describe("pass-over-pass state", () => {
 
   it("returns null state from a body without a state block", () => {
     assert.equal(parsePreviousState("<!-- coderev -->\nold format comment"), null);
+  });
+
+  it("round-trips the reviewed diff hash for the skip check", () => {
+    const comment = formatReviewComment({
+      findings: [],
+      model: "m",
+      truncated: false,
+      diffHash: "abc123",
+    });
+    assert.equal(parseStoredDiffHash(comment), "abc123");
+    // Pre-hash comments must read as "unknown", never as a match.
+    const older = formatReviewComment({ findings: [], model: "m", truncated: false });
+    assert.equal(parseStoredDiffHash(older), null);
   });
 });
 

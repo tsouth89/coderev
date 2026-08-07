@@ -17,12 +17,14 @@ import {
   resolveReviewProvider,
 } from "../src/provider.ts";
 import { SEVERITY_ORDER } from "../src/review.ts";
+import { createHash } from "node:crypto";
 import {
   classifyAgainstPrevious,
   dedupeFindings,
   formatReviewComment,
   parseCommentableLines,
   parsePreviousState,
+  parseStoredDiffHash,
   planInlineComments,
   reviewDiff,
   stripGeneratedHunks,
@@ -43,6 +45,9 @@ Flags:
   --repo         Directory of the repository to review. Defaults to the working directory.
   --context      Also fetch full changed-file contents and feed them to the find stage.
   --summary-only Skip inline file/line comments; post only the summary comment.
+  --force        Review even when the diff is identical to the last reviewed
+                 push. Without it, an unchanged diff skips the review: same
+                 input, same config would buy the same findings twice.
   --gate         Exit 3 when a surviving finding meets this severity (high,
                  medium, or low). Infra/provider failures exit 0 under a gate
                  (fail-open): a blocking check must block on findings, never
@@ -75,6 +80,7 @@ async function main(): Promise<number> {
       context: { type: "boolean", default: false },
       "summary-only": { type: "boolean", default: false },
       gate: { type: "string" },
+      force: { type: "boolean", default: false },
     },
     usage: USAGE,
   });
@@ -133,6 +139,26 @@ async function main(): Promise<number> {
 
   // Always on: a few KB that closes the file-existence false-positive class.
   const inventory = await buildFileInventory(diff, cwd);
+
+  // A push that does not change the diff (rebase, merge-from-main, CI retry)
+  // re-buys nothing: the state block records what was reviewed, and reviewing
+  // the same bytes again produces the same findings at full price. Fetched
+  // before the review so the skip costs one API read, not one review.
+  const diffHash = createHash("sha256").update(diff, "utf8").digest("hex");
+  const previousBody = await fetchExistingReviewComment({
+    pr,
+    marker: REVIEW_COMMENT_MARKER,
+    ...(cwd === undefined ? {} : { cwd }),
+  });
+  const previous = previousBody === null ? null : parsePreviousState(previousBody);
+  if (
+    values.force !== true &&
+    previousBody !== null &&
+    parseStoredDiffHash(previousBody) === diffHash
+  ) {
+    console.log("Diff unchanged since the last reviewed push; skipping (use --force to override).");
+    return 0;
+  }
 
   // Panel evidence for out-of-diff claims: read the file a finding cites from
   // the local checkout, best-effort. Three of four out-of-diff false positives
@@ -203,12 +229,6 @@ async function main(): Promise<number> {
     throw new Error(`Review did not run: ${generationError}`);
   }
 
-  const previousBody = await fetchExistingReviewComment({
-    pr,
-    marker: REVIEW_COMMENT_MARKER,
-    ...(cwd === undefined ? {} : { cwd }),
-  });
-  const previous = previousBody === null ? null : parsePreviousState(previousBody);
   const comment = formatReviewComment({
     findings,
     model: provider.model,
@@ -216,6 +236,7 @@ async function main(): Promise<number> {
     ...(refuteProvider ? { panelModel: refuteProvider.model } : {}),
     truncated,
     previous,
+    diffHash,
   });
   if (values.post !== true) {
     console.log(`\n${comment}`);
