@@ -205,7 +205,9 @@ export const FIND_SYSTEM_PROMPT = [
   "",
   "Rate each finding's severity by OUTCOME on inputs that occur in practice, not",
   "by how surprising the mechanism is:",
-  '- "high": data loss, corruption, crash, or a security hole, on realistic input.',
+  '- "high": the change does not work at all, loses or corrupts data, crashes, or',
+  "  is unsafe, on realistic input. A resource leak with no growth path is medium:",
+  "  high must tell the reader what to read first.",
   '- "medium": a feature silently does not work, or wrong-but-recoverable output.',
   '- "low": cosmetic, diagnostic, defensive gaps, doc-versus-code mismatches.',
   "If the triggering input cannot occur on real systems (impossible geometry,",
@@ -215,6 +217,20 @@ export const FIND_SYSTEM_PROMPT = [
   "",
   "Every finding MUST carry the new-file line number from the hunk it concerns.",
   "A finding without a line cannot be navigated to or anchored.",
+  "",
+  "A claim that state is PERSISTED or DURABLE must cite where it is written: the",
+  "schema, the migration, or the write site. Persistence inferred from a variable",
+  "name is not evidence, and a persistence claim without a citation will be",
+  "discarded.",
+  "",
+  "Once per review, if the diff changes behaviour and no test in it would fail",
+  "without the change, report a single finding titled 'No failing test covers",
+  "this change' at severity medium. Skip this for docs, config, or test-only",
+  "diffs.",
+  "",
+  "When the diff REMOVES user-facing behaviour, report it once at severity",
+  "medium as a question of intent, naming what the user loses. Clean code and",
+  "updated tests do not answer whether the removal was wanted.",
   "",
   "Report up to 10 findings, most severe first.",
   "",
@@ -263,6 +279,10 @@ export const REFUTE_SYSTEM_PROMPT = [
   "- An adjacent code comment explicitly addresses and justifies the exact",
   "  concern the claim raises. The author answered it in advance; read the",
   "  comment above the code before letting the claim stand.",
+  "- It asserts state is persisted or durable without citing the schema,",
+  "  migration, or write site that persists it. Persistence inferred from a",
+  "  variable name is not evidence; the most expensive false positive on",
+  "  record required tracing a store to disprove exactly this.",
   "- It names no checkable mechanism: it asserts something 'may' break or 'could'",
   "  be unsafe without saying which input, state, or sequence causes it. A claim",
   "  too vague to check is too vague to act on.",
@@ -592,19 +612,28 @@ export const DEDUPE_NEARBY_LINES = 40;
  * quarter-similar title on the same file within a few dozen lines is the same
  * concern, while a quarter-similar title elsewhere in the file is not.
  */
+/** Nearby findings whose title+detail text overlaps this much share a root cause. */
+export const DEDUPE_BODY_SIMILARITY = 0.45;
+
 export function sameConcern(
-  a: { readonly file: string; readonly line: number; readonly title: string },
-  b: { readonly file: string; readonly line: number; readonly title: string },
+  a: { readonly file: string; readonly line: number; readonly title: string; readonly detail?: string },
+  b: { readonly file: string; readonly line: number; readonly title: string; readonly detail?: string },
 ): boolean {
   if (a.file !== b.file) return false;
   const similarity = jaccard(titleTokens(a.title), titleTokens(b.title));
   if (similarity >= DEDUPE_SIMILARITY_THRESHOLD) return true;
-  return (
-    similarity >= DEDUPE_NEARBY_SIMILARITY &&
-    a.line > 0 &&
-    b.line > 0 &&
-    Math.abs(a.line - b.line) <= DEDUPE_NEARBY_LINES
+  const nearby =
+    a.line > 0 && b.line > 0 && Math.abs(a.line - b.line) <= DEDUPE_NEARBY_LINES;
+  if (!nearby) return false;
+  if (similarity >= DEDUPE_NEARBY_SIMILARITY) return true;
+  // Root-cause pass, from a production scorecard: pairs three lines apart with
+  // near-verbatim BODIES but divergent titles were posted as two findings.
+  // Titles compress differently; details restating the same mechanism do not.
+  const bodyOverlap = jaccard(
+    titleTokens(`${a.title} ${a.detail ?? ""}`),
+    titleTokens(`${b.title} ${b.detail ?? ""}`),
   );
+  return bodyOverlap >= DEDUPE_BODY_SIMILARITY;
 }
 
 /**

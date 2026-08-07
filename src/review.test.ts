@@ -208,6 +208,32 @@ describe("unionCandidates", () => {
     assert.equal(union[0]?.severity, "high");
   });
 
+  it("merges divergent titles whose bodies restate the same root cause", () => {
+    // From a production scorecard: pairs three lines apart with near-verbatim
+    // details but different title compressions posted as two findings.
+    const a = {
+      file: "src/reactor.ts",
+      line: 339,
+      title: "Watermark entries evicted while Stop pending",
+      detail:
+        "TTL expiry removes the watermark entry while a queued Stop still references it, so the Stop dispatches against a missing watermark and the turn is never cancelled.",
+      severity: "medium",
+      source: "m1",
+    } as const;
+    const b = {
+      file: "src/reactor.ts",
+      line: 342,
+      title: "LRU eviction breaks Stop cancellation",
+      detail:
+        "LRU eviction removes the watermark entry while a queued Stop still references it, so the Stop dispatches against a missing watermark and the turn is never cancelled.",
+      severity: "high",
+      source: "m2",
+    } as const;
+    const union = unionCandidates([a], [b]);
+    assert.equal(union.length, 1);
+    assert.equal(union[0]?.severity, "high");
+  });
+
   it("does not merge quarter-similar titles that are far apart in the file", () => {
     const a = {
       file: "src/scroll.rs",

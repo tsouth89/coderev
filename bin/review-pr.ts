@@ -16,6 +16,7 @@ import {
   resolveRefuteProvider,
   resolveReviewProvider,
 } from "../src/provider.ts";
+import { SEVERITY_ORDER } from "../src/review.ts";
 import {
   classifyAgainstPrevious,
   dedupeFindings,
@@ -42,6 +43,10 @@ Flags:
   --repo         Directory of the repository to review. Defaults to the working directory.
   --context      Also fetch full changed-file contents and feed them to the find stage.
   --summary-only Skip inline file/line comments; post only the summary comment.
+  --gate         Exit 3 when a surviving finding meets this severity (high,
+                 medium, or low). Infra/provider failures exit 0 under a gate
+                 (fail-open): a blocking check must block on findings, never
+                 on outages. Without --gate, behaviour is advisory as before.
 
 Environment:
   REVIEW_API_KEY       Model API key. Falls back to the provider's own variable.
@@ -69,6 +74,7 @@ async function main(): Promise<number> {
       repo: { type: "string" },
       context: { type: "boolean", default: false },
       "summary-only": { type: "boolean", default: false },
+      gate: { type: "string" },
     },
     usage: USAGE,
   });
@@ -179,11 +185,21 @@ async function main(): Promise<number> {
       (cost === null ? "" : ` (~$${cost.toFixed(4)})`),
   );
 
-  // A failed review must never be posted or reported as a pass. Silence is the
-  // only honest output here: an empty findings list from a review that never
-  // ran is indistinguishable from a clean one, and posting it would put a
-  // false all-clear on the pull request.
+  const gate = typeof values.gate === "string" ? values.gate.trim().toLowerCase() : "";
+  if (gate !== "" && gate !== "high" && gate !== "medium" && gate !== "low") {
+    throw new Error(`--gate must be high, medium, or low, not "${gate}"`);
+  }
+
+  // A failed review must never be posted or reported as a pass. Advisory mode
+  // exits non-zero so the red job says "did not run". Under a gate the same
+  // failure exits ZERO: a blocking check that goes red on provider outages
+  // blocks every merge whenever the vendor hiccups, which is the incumbent's
+  // failure mode with the sign flipped. Fail-open, loudly.
   if (generationError !== null) {
+    if (gate !== "") {
+      console.error(`Review did not run (${generationError}); gate is fail-open, not blocking.`);
+      return 0;
+    }
     throw new Error(`Review did not run: ${generationError}`);
   }
 
@@ -239,6 +255,19 @@ async function main(): Promise<number> {
           `Inline comments failed, summary stands: ${cause instanceof Error ? cause.message : String(cause)}`,
         );
       }
+    }
+  }
+
+  if (gate !== "") {
+    const threshold = gate as "high" | "medium" | "low";
+    const blocking = findings.filter(
+      (finding) => SEVERITY_ORDER[finding.severity] <= SEVERITY_ORDER[threshold],
+    );
+    if (blocking.length > 0) {
+      console.error(
+        `Gate: ${blocking.length} finding(s) at or above severity "${threshold}" — failing the check.`,
+      );
+      return 3;
     }
   }
   return 0;

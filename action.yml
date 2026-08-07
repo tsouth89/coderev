@@ -46,6 +46,13 @@ inputs:
     description: Second generator's API key. Empty degrades to single-generator with a warning.
     required: false
     default: ""
+  gate:
+    description: >-
+      Fail the check (exit 3) when a surviving finding meets this severity
+      (high, medium, or low). Fail-open on provider/infra errors. Empty keeps
+      the check advisory. Pair with removing continue-on-error in the workflow.
+    required: false
+    default: ""
 
 
 runs:
@@ -70,5 +77,6 @@ runs:
       run: |
         args=(--pr "${{ inputs.pr }}")
         [[ "${{ inputs.post }}" == "true" ]] && args+=(--post)
+        [[ -n "${{ inputs.gate }}" ]] && args+=(--gate "${{ inputs.gate }}")
         [[ -n "${{ inputs.conventions }}" ]] && args+=(--conventions "${{ inputs.conventions }}")
         node "${{ github.action_path }}/bin/review-pr.ts" "${args[@]}"
