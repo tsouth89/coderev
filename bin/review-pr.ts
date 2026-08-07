@@ -193,7 +193,14 @@ async function main(): Promise<number> {
     ...(cwd === undefined ? {} : { cwd }),
   });
   const previous = previousBody === null ? null : parsePreviousState(previousBody);
-  const comment = formatReviewComment({ findings, model: provider.model, truncated, previous });
+  const comment = formatReviewComment({
+    findings,
+    model: provider.model,
+    ...(find2Provider ? { find2Model: find2Provider.model } : {}),
+    ...(refuteProvider ? { panelModel: refuteProvider.model } : {}),
+    truncated,
+    previous,
+  });
   if (values.post !== true) {
     console.log(`\n${comment}`);
     return 0;
