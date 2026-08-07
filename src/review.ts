@@ -1048,6 +1048,62 @@ export function formatAnchorSnippet(input: {
   ].join("\n");
 }
 
+/**
+ * Best-effort line for a finding that arrived without one.
+ *
+ * Production shipped high-severity findings with line 0 — unnavigable in the
+ * UI and excluded from inline anchoring. The finding's own title usually
+ * names identifiers that appear verbatim on the added lines it concerns, so
+ * score every added line in the finding's file by title-token hits and take
+ * the best. Zero stays zero when nothing matches: a wrong guess presented as
+ * an anchor is worse than an honest absence.
+ */
+export function backfillLineFromDiff(
+  finding: { readonly file: string; readonly line: number; readonly title: string },
+  diff: string,
+): number {
+  if (finding.line > 0) return finding.line;
+  const tokens = [...titleTokens(finding.title)].filter((token) => token.length >= 4);
+  if (tokens.length === 0) return 0;
+  let currentFile: string | null = null;
+  let newLine = 0;
+  let inHunk = false;
+  let bestLine = 0;
+  let bestHits = 0;
+  for (const line of diff.split(/\r?\n/)) {
+    const fileMatch = line.match(/^\+\+\+ b\/(.+)$/);
+    if (fileMatch?.[1]) {
+      currentFile = fileMatch[1];
+      inHunk = false;
+      continue;
+    }
+    const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunkMatch?.[1]) {
+      newLine = Number(hunkMatch[1]);
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk || currentFile !== finding.file) {
+      if (inHunk && (line.startsWith("+") || line.startsWith(" ") || line === "")) newLine += 1;
+      continue;
+    }
+    if (line.startsWith("+")) {
+      const haystack = line.toLowerCase();
+      const hits = tokens.filter((token) => haystack.includes(token)).length;
+      if (hits > bestHits) {
+        bestHits = hits;
+        bestLine = newLine;
+      }
+      newLine += 1;
+    } else if (line.startsWith(" ") || line === "") {
+      newLine += 1;
+    } else if (!line.startsWith("-")) {
+      inHunk = false;
+    }
+  }
+  return bestHits > 0 ? bestLine : 0;
+}
+
 /** Run `tasks` with a bounded number in flight, preserving input order. */
 async function mapWithConcurrency<A, B>(
   items: ReadonlyArray<A>,
@@ -1148,27 +1204,40 @@ async function runPanel(input: {
       context: input.context ?? null,
     }),
   );
-  const tasks = input.candidates.flatMap((_, findingIndex) =>
-    Array.from({ length: REFUTATION_PANEL_SIZE }, (_, seat) => ({ findingIndex, seat })),
-  );
-  if (tasks.length === 0) return [];
+  if (input.candidates.length === 0) return [];
 
-  const vote = (task: { readonly findingIndex: number; readonly seat: number }) =>
+  const cast = (findingIndex: number, seat: number) =>
     castVote({
-      findingIndex: task.findingIndex,
-      prompt: prompts[task.findingIndex] ?? "",
-      anchorSnippet: input.anchorSnippets?.[task.findingIndex] ?? null,
-      lens: REFUTE_LENSES[task.seat % REFUTE_LENSES.length] ?? "",
+      findingIndex,
+      prompt: prompts[findingIndex] ?? "",
+      anchorSnippet: input.anchorSnippets?.[findingIndex] ?? null,
+      lens: REFUTE_LENSES[seat % REFUTE_LENSES.length] ?? "",
       provider: input.provider,
       onProgress: input.onProgress,
     });
 
-  const first = await vote(tasks[0] as { findingIndex: number; seat: number });
-  const rest = await mapWithConcurrency(tasks.slice(1), PANEL_CONCURRENCY, vote);
-  const votes = [first, ...rest];
+  // Pair-then-tiebreak: seats 0 and 1 vote together; seat 2 runs only when
+  // they split. Under majority rule this is the SAME decision function as
+  // always casting three votes — a third vote cannot flip a 2-0, and on a 1-1
+  // the tiebreak decides either way — so roughly a third of panel spend (the
+  // system's single largest cost, measured from billing) buys arithmetic
+  // no-ops. Agreement-rate in production makes the saving real: most verdicts
+  // are unanimous.
+  const judgeFinding = async (findingIndex: number) => {
+    const [a, b] = await Promise.all([cast(findingIndex, 0), cast(findingIndex, 1)]);
+    const mine = [a, b];
+    if (a.verdict.refuted !== b.verdict.refuted) mine.push(await cast(findingIndex, 2));
+    return mine;
+  };
+
+  // First finding alone warms the shared prefix; two misses, not a burst.
+  const first = await judgeFinding(0);
+  const restIndexes = input.candidates.slice(1).map((_, offset) => offset + 1);
+  const rest = await mapWithConcurrency(restIndexes, PANEL_CONCURRENCY / 2, judgeFinding);
+  const perFinding = [first, ...rest];
 
   return input.candidates.map((finding, findingIndex) => {
-    const mine = votes.filter((entry) => entry.findingIndex === findingIndex);
+    const mine = perFinding[findingIndex] ?? [];
     const verdicts = mine.map((entry) => entry.verdict);
     // Seeded as reported:true so `reported` stays a plain AND across the panel;
     // seeding from EMPTY_USAGE would mark every panel unreported.
@@ -1320,7 +1389,11 @@ export async function reviewDiff(input: {
     secondary !== null && secondary.ok && input.find2Provider
       ? tag(parseFindings(secondary.result.content), input.find2Provider.model)
       : [];
-  const candidates = unionCandidates(primaryCandidates, secondaryCandidates);
+  const candidates = unionCandidates(primaryCandidates, secondaryCandidates).map((candidate) =>
+    candidate.line > 0
+      ? candidate
+      : { ...candidate, line: backfillLineFromDiff(candidate, input.diff) },
+  );
   // A stage that made no request has a known usage of zero, not an unknown
   // one: EMPTY_USAGE's reported:false would AND-poison every total it is
   // summed into and turn a fully-measured single-generator review into

@@ -110,12 +110,35 @@ describe("pipeline against a streaming provider", () => {
       result.findings.map((finding) => finding.title),
       ["Real leak"],
     );
-    // 1 find + 2 findings x 3 votes, each reporting usage.
-    assert.equal(behaviour.requestCount, 7);
+    // 1 find + 2 findings x 2 votes: both pairs agree, so neither tiebreak
+    // seat runs — the pair-then-tiebreak fast path with an identical decision.
+    assert.equal(behaviour.requestCount, 5);
     assert.equal(result.usage.reported, true);
-    assert.equal(result.usage.inputTokens, 700);
+    assert.equal(result.usage.inputTokens, 500);
     // The cache field must come through the stream path, not just JSON bodies.
-    assert.equal(result.usage.cachedInputTokens, 420);
+    assert.equal(result.usage.cachedInputTokens, 300);
+  });
+
+  it("casts the tiebreak vote only when the first two seats split", async () => {
+    reset();
+    behaviour.findResponse = JSON.stringify({
+      findings: [{ file: "a.ts", line: 10, title: "Contested claim", detail: "d" }],
+    });
+    // Seat lenses appear verbatim in the vote body, so the mock can split the
+    // pair and let the scope seat decide.
+    behaviour.refuteResponse = (body) =>
+      body.includes("CHECKABILITY")
+        ? '{"refuted":true,"reason":"names no trigger"}'
+        : body.includes("MECHANISM ACCURACY")
+          ? '{"refuted":false,"reason":"traced and confirmed"}'
+          : '{"refuted":true,"reason":"restates intent"}';
+
+    const result = await reviewDiff({ diff: "x", conventions: null, provider });
+
+    // 1 find + a split pair + the tiebreak; majority 2-1 refuted, so dropped.
+    assert.equal(behaviour.requestCount, 4);
+    assert.deepEqual(result.findings, []);
+    assert.equal(result.adjudicated[0]?.verdicts.length, 3);
   });
 
   it("reassembles JSON split across SSE chunk boundaries", async () => {

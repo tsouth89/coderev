@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  backfillLineFromDiff,
   classifyAgainstPrevious,
   formatAnchorSnippet,
   parseCommentableLines,
@@ -100,6 +101,45 @@ describe("formatAnchorSnippet", () => {
     // region presented as the right one.
     assert.equal(formatAnchorSnippet({ file: "a.ts", line: 999, content }), null);
     assert.equal(formatAnchorSnippet({ file: "a.ts", line: 0, content }), null);
+  });
+});
+
+describe("backfillLineFromDiff", () => {
+  const diff = [
+    "diff --git a/src/hotkeys.rs b/src/hotkeys.rs",
+    "--- a/src/hotkeys.rs",
+    "+++ b/src/hotkeys.rs",
+    "@@ -40,3 +40,5 @@",
+    " fn setup() {",
+    "+    let ok = RegisterHotKey(hwnd, CHORD_ID, mods, vk);",
+    "+    start_polling();",
+    " }",
+  ].join("
+");
+
+  it("locates the added line naming the title's identifiers", () => {
+    // Production shipped high findings with line 0 — unnavigable and excluded
+    // from inline anchoring — while their titles named the exact call.
+    const line = backfillLineFromDiff(
+      { file: "src/hotkeys.rs", line: 0, title: "RegisterHotKey failure ignored" },
+      diff,
+    );
+    assert.equal(line, 41);
+  });
+
+  it("leaves zero alone when nothing matches — no guessed anchors", () => {
+    const line = backfillLineFromDiff(
+      { file: "src/hotkeys.rs", line: 0, title: "Completely unrelated subject" },
+      diff,
+    );
+    assert.equal(line, 0);
+  });
+
+  it("never rewrites a finding that already has a line", () => {
+    assert.equal(
+      backfillLineFromDiff({ file: "src/hotkeys.rs", line: 7, title: "RegisterHotKey" }, diff),
+      7,
+    );
   });
 });
 
