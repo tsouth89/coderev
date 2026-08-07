@@ -1389,11 +1389,29 @@ export async function reviewDiff(input: {
     secondary !== null && secondary.ok && input.find2Provider
       ? tag(parseFindings(secondary.result.content), input.find2Provider.model)
       : [];
-  const candidates = unionCandidates(primaryCandidates, secondaryCandidates).map((candidate) =>
+  // Guardrail, sized from a 50-run fleet sweep: candidates average ~4 per
+  // review and the busiest real run hit 9, so a cap of 12 almost never binds —
+  // it exists for the pathological run where a generator floods, because every
+  // candidate costs at least two panel votes. Severity-sorted first, so what
+  // falls off is the low tail, and the log says what was dropped.
+  const MAX_PANEL_CANDIDATES = 12;
+  let candidates = unionCandidates(primaryCandidates, secondaryCandidates).map((candidate) =>
     candidate.line > 0
       ? candidate
       : { ...candidate, line: backfillLineFromDiff(candidate, input.diff) },
   );
+  if (candidates.length > MAX_PANEL_CANDIDATES) {
+    const ranked = candidates
+      .map((candidate, index) => ({ candidate, index }))
+      .sort(
+        (a, b) =>
+          SEVERITY_ORDER[a.candidate.severity] - SEVERITY_ORDER[b.candidate.severity] ||
+          a.index - b.index,
+      )
+      .map((entry) => entry.candidate);
+    note(`Capping panel input to ${MAX_PANEL_CANDIDATES} of ${candidates.length} candidates (severity-ranked).`);
+    candidates = ranked.slice(0, MAX_PANEL_CANDIDATES);
+  }
   // A stage that made no request has a known usage of zero, not an unknown
   // one: EMPTY_USAGE's reported:false would AND-poison every total it is
   // summed into and turn a fully-measured single-generator review into
