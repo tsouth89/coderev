@@ -371,6 +371,23 @@ describe("pass-over-pass state", () => {
     assert.match(second, /Resolved since the previous pass: 1\./);
   });
 
+  it("never says only 'nothing new' while findings remain open", () => {
+    // Production misread: a session recorded "0 findings, clean pass" on a PR
+    // where three carried findings sat below a bare "Nothing new" headline.
+    const first = formatReviewComment({
+      findings: [finding("a.ts", "Handoff marker invisible", "high")],
+      model: "m",
+      truncated: false,
+    });
+    const second = formatReviewComment({
+      findings: [finding("a.ts", "Handoff marker invisible", "high")],
+      model: "m",
+      truncated: false,
+      previous: parsePreviousState(first),
+    });
+    assert.match(second, /Nothing new in this pass; 1 finding\(s\) from the previous pass still open/);
+  });
+
   it("reports a clean re-pass as resolutions, not silence", () => {
     const first = formatReviewComment({
       findings: [finding("a.ts", "Unordered writes race", "high")],

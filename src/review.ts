@@ -959,7 +959,13 @@ export function formatReviewComment(input: {
       lines.push(`New in this pass: ${fresh.length} ${noun}.`, "");
       fresh.forEach(renderFull);
     } else {
-      lines.push("Nothing new in this pass.");
+      // "Nothing new" alone was misread as a clean pass in production while
+      // three findings sat carried below it. The headline must say both.
+      lines.push(
+        carried.length > 0
+          ? `Nothing new in this pass; ${carried.length} finding(s) from the previous pass still open below.`
+          : "Nothing new in this pass.",
+      );
     }
     if (carried.length > 0) {
       lines.push("", `Still open from the previous pass:`, "");
