@@ -114,8 +114,7 @@ describe("backfillLineFromDiff", () => {
     "+    let ok = RegisterHotKey(hwnd, CHORD_ID, mods, vk);",
     "+    start_polling();",
     " }",
-  ].join("
-");
+  ].join("\n");
 
   it("locates the added line naming the title's identifiers", () => {
     // Production shipped high findings with line 0 — unnavigable and excluded
