@@ -258,6 +258,7 @@ async function main(): Promise<number> {
     truncated,
     previous,
     diffHash,
+    changedLines: parseCommentableLines(rawDiff),
     // This pass's drops plus the carried older ones, newest first; embedState
     // bounds the stored list.
     droppedThisPass: [
@@ -292,8 +293,9 @@ async function main(): Promise<number> {
   // diff since that is what GitHub accepts anchors on. Any failure degrades to
   // the summary that just posted — inline is presentation, not the record.
   if (values["summary-only"] !== true && findings.length > 0) {
-    const { fresh } = classifyAgainstPrevious(dedupeFindings(findings), previous);
-    const { anchored, unanchored } = planInlineComments(fresh, parseCommentableLines(rawDiff));
+    const commentable = parseCommentableLines(rawDiff);
+    const { fresh } = classifyAgainstPrevious(dedupeFindings(findings), previous, commentable);
+    const { anchored, unanchored } = planInlineComments(fresh, commentable);
     if (unanchored.length > 0) {
       console.log(`${unanchored.length} finding(s) had no diff anchor; summary only.`);
     }

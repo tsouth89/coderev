@@ -852,36 +852,66 @@ export function dedupeFindings(findings: ReadonlyArray<ReviewFinding>): Array<Gr
 
 export interface PassClassification {
   readonly fresh: ReadonlyArray<GroupedFinding>;
-  readonly carried: ReadonlyArray<GroupedFinding>;
+  /** Still-open findings, rendered from state — regeneration is not required. */
+  readonly carried: ReadonlyArray<PreviousFinding>;
   readonly resolved: ReadonlyArray<PreviousFinding>;
 }
 
+/** How far from a changed line a cited line counts as touched by the push. */
+export const RESOLUTION_PROXIMITY_LINES = 10;
+
 /**
- * Split this pass's findings against the previous pass. Shared by the summary
- * formatter and the inline planner so "new" means exactly one thing: inline
- * comments post only for fresh findings, because a re-posted inline comment
- * for a finding the author has already read is spam with an anchor.
+ * Split this pass's findings against the previous pass.
+ *
+ * "Resolved" is an evidence claim, not an absence claim. The first version
+ * defined resolved as in-previous-but-not-in-current, which broke the moment
+ * generation suppression shipped: suppressed findings can never be re-found,
+ * so every finding was reported once and then falsely marked resolved on the
+ * next push, fixed or not — observed in production as a re-pass posting
+ * "(0 findings)" over two untouched keeps. A previous finding now resolves
+ * only when the new diff actually touched its cited region (and it was not
+ * re-found); otherwise it stays carried, rendered from state.
+ *
+ * Shared by the summary formatter and the inline planner so "new" means
+ * exactly one thing: inline comments post only for fresh findings.
  */
 export function classifyAgainstPrevious(
   grouped: ReadonlyArray<GroupedFinding>,
   previous: ReadonlyArray<PreviousFinding> | null,
+  changedLines?: ReadonlyMap<string, ReadonlySet<number>> | null,
 ): PassClassification {
   if (previous === null) return { fresh: grouped, carried: [], resolved: [] };
-  const isCarried = (finding: GroupedFinding): boolean =>
-    finding.locations.some((location) =>
-      matchesPrevious({ file: location.file, title: finding.title }, previous),
+  const matchesEntry = (entry: PreviousFinding): boolean =>
+    grouped.some((finding) =>
+      finding.locations.some((location) =>
+        matchesPrevious({ file: location.file, title: finding.title }, [entry]),
+      ),
     );
+  const regionTouched = (entry: PreviousFinding): boolean => {
+    const lines = changedLines?.get(entry.file);
+    if (!lines) return false;
+    if (entry.line <= 0) return lines.size > 0;
+    for (
+      let line = entry.line - RESOLUTION_PROXIMITY_LINES;
+      line <= entry.line + RESOLUTION_PROXIMITY_LINES;
+      line += 1
+    ) {
+      if (lines.has(line)) return true;
+    }
+    return false;
+  };
+  const fresh = grouped.filter(
+    (finding) =>
+      !finding.locations.some((location) =>
+        matchesPrevious({ file: location.file, title: finding.title }, previous),
+      ),
+  );
+  const resolved = previous.filter((entry) => !matchesEntry(entry) && regionTouched(entry));
+  const resolvedSet = new Set(resolved);
   return {
-    fresh: grouped.filter((finding) => !isCarried(finding)),
-    carried: grouped.filter(isCarried),
-    resolved: previous.filter(
-      (entry) =>
-        !grouped.some((finding) =>
-          finding.locations.some((location) =>
-            matchesPrevious({ file: location.file, title: finding.title }, [entry]),
-          ),
-        ),
-    ),
+    fresh,
+    carried: previous.filter((entry) => !resolvedSet.has(entry)),
+    resolved,
   };
 }
 
@@ -998,6 +1028,8 @@ export function formatReviewComment(input: {
   readonly diffHash?: string | null;
   /** This pass's refuted candidates, carried in state so drops stay dropped. */
   readonly droppedThisPass?: ReadonlyArray<PreviousFinding> | null;
+  /** Head-side changed lines of the reviewed diff, for evidence-based resolution. */
+  readonly changedLines?: ReadonlyMap<string, ReadonlySet<number>> | null;
 }): string {
   const lines = [REVIEW_COMMENT_MARKER, "", "### Automated review", ""];
 
@@ -1012,7 +1044,11 @@ export function formatReviewComment(input: {
     )
     .map((entry) => entry.finding);
   const previous = input.previous ?? null;
-  const { fresh, carried, resolved } = classifyAgainstPrevious(grouped, previous);
+  const { fresh, carried, resolved } = classifyAgainstPrevious(
+    grouped,
+    previous,
+    input.changedLines ?? null,
+  );
 
   const renderFull = (finding: GroupedFinding, index: number) => {
     lines.push(`${index + 1}. **${finding.title}**`, "");
@@ -1042,7 +1078,10 @@ export function formatReviewComment(input: {
     }
   };
 
-  if (grouped.length === 0) {
+  // "No blocking issues" is only true when nothing is carried either: a pass
+  // with zero new keeps over open findings must still show them, or the
+  // suppressed-but-unfixed become invisible — the false all-clear again.
+  if (grouped.length === 0 && carried.length === 0) {
     lines.push("No blocking issues found.");
     if (resolved.length > 0) {
       lines.push("", `Resolved since the previous pass: ${resolved.length}.`);
@@ -1070,12 +1109,10 @@ export function formatReviewComment(input: {
       );
     }
     if (carried.length > 0) {
-      lines.push("", `Still open from the previous pass:`, "");
-      for (const finding of carried) {
-        const where = finding.locations
-          .map((location) => `\`${location.file}\`${location.line > 0 ? `:${location.line}` : ""}`)
-          .join(", ");
-        lines.push(`- **${finding.title}** \u2014 ${where} \u00b7 ${finding.severity}`);
+      lines.push("", `Still open from earlier passes:`, "");
+      for (const entry of carried) {
+        const where = `\`${entry.file}\`${entry.line > 0 ? `:${entry.line}` : ""}`;
+        lines.push(`- **${entry.title}** \u2014 ${where} \u00b7 ${entry.severity}`);
       }
     }
     if (resolved.length > 0) {
@@ -1098,14 +1135,17 @@ export function formatReviewComment(input: {
     `<sub>Advisory. Findings generated by ${generators}, each filtered through ${panel} with the changed code in evidence.</sub>`,
     "",
     embedState(
-      grouped.flatMap((finding) =>
-        finding.locations.map((location) => ({
-          file: location.file,
-          line: location.line,
-          title: finding.title,
-          severity: finding.severity,
-        })),
-      ),
+      [
+        ...fresh.flatMap((finding) =>
+          finding.locations.map((location) => ({
+            file: location.file,
+            line: location.line,
+            title: finding.title,
+            severity: finding.severity,
+          })),
+        ),
+        ...carried,
+      ],
       input.diffHash ?? null,
       input.droppedThisPass ?? undefined,
     ),

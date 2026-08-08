@@ -359,7 +359,7 @@ describe("pass-over-pass state", () => {
     });
   });
 
-  it("splits a re-pass into new, still-open, and resolved", () => {
+  it("splits a re-pass into new, still-open, and evidence-based resolved", () => {
     const first = formatReviewComment({
       findings: [
         finding("a.ts", "Unordered writes race", "high"),
@@ -368,21 +368,60 @@ describe("pass-over-pass state", () => {
       model: "m",
       truncated: false,
     });
+    // b.ts's cited region was touched by the new push; a.ts's was not.
     const second = formatReviewComment({
-      findings: [
-        finding("a.ts", "Race condition from unordered writes", "high"), // rephrased carry
-        finding("c.ts", "Timer never cancelled", "high"), // new
-      ],
+      findings: [finding("c.ts", "Timer never cancelled", "high")],
       model: "m",
       truncated: false,
       previous: parsePreviousState(first),
+      changedLines: new Map([["b.ts", new Set([40, 41])]]),
     });
     assert.match(second, /New in this pass: 1 issue\./);
     assert.match(second, /Timer never cancelled/);
-    assert.match(second, /Still open from the previous pass:/);
-    assert.match(second, /Unordered writes race|Race condition from unordered writes/);
-    // b.ts's finding is gone this pass.
+    assert.match(second, /Still open from earlier passes:/);
+    assert.match(second, /Unordered writes race/);
     assert.match(second, /Resolved since the previous pass: 1\./);
+  });
+
+  it("does not mark a suppressed-but-untouched finding resolved", () => {
+    // Generation suppression means open findings are never re-found; before
+    // this fix a re-pass posting zero keeps falsely resolved everything. An
+    // untouched cited region keeps the finding carried, and it stays in the
+    // embedded state for the pass after that.
+    const first = formatReviewComment({
+      findings: [finding("a.ts", "Unordered writes race", "high")],
+      model: "m",
+      truncated: false,
+    });
+    const second = formatReviewComment({
+      findings: [],
+      model: "m",
+      truncated: false,
+      previous: parsePreviousState(first),
+      changedLines: new Map(),
+    });
+    assert.match(second, /Still open from earlier passes:/);
+    assert.match(second, /Unordered writes race/);
+    assert.doesNotMatch(second, /Resolved since/);
+    assert.equal(parsePreviousState(second)?.length, 1);
+  });
+
+  it("resolves a finding whose cited region the push touched", () => {
+    const first = formatReviewComment({
+      findings: [finding("a.ts", "Unordered writes race", "high")],
+      model: "m",
+      truncated: false,
+    });
+    const second = formatReviewComment({
+      findings: [],
+      model: "m",
+      truncated: false,
+      previous: parsePreviousState(first),
+      changedLines: new Map([["a.ts", new Set([38])]]),
+    });
+    assert.match(second, /No blocking issues found\./);
+    assert.match(second, /Resolved since the previous pass: 1\./);
+    assert.equal(parsePreviousState(second)?.length, 0);
   });
 
   it("never says only 'nothing new' while findings remain open", () => {
@@ -400,22 +439,6 @@ describe("pass-over-pass state", () => {
       previous: parsePreviousState(first),
     });
     assert.match(second, /Nothing new in this pass; 1 finding\(s\) from the previous pass still open/);
-  });
-
-  it("reports a clean re-pass as resolutions, not silence", () => {
-    const first = formatReviewComment({
-      findings: [finding("a.ts", "Unordered writes race", "high")],
-      model: "m",
-      truncated: false,
-    });
-    const second = formatReviewComment({
-      findings: [],
-      model: "m",
-      truncated: false,
-      previous: parsePreviousState(first),
-    });
-    assert.match(second, /No blocking issues found\./);
-    assert.match(second, /Resolved since the previous pass: 1\./);
   });
 
   it("returns null state from a body without a state block", () => {

@@ -156,7 +156,7 @@ describe("classifyAgainstPrevious", () => {
     assert.equal(result.carried.length, 0);
   });
 
-  it("carries rephrased repeats and resolves what disappeared", () => {
+  it("carries rephrased repeats and resolves only touched regions", () => {
     const previous = [
       { file: "a.ts", line: 3, title: "Leak on close", severity: "medium" as const },
       { file: "b.ts", line: 9, title: "Timer never cancelled", severity: "high" as const },
@@ -164,6 +164,7 @@ describe("classifyAgainstPrevious", () => {
     const result = classifyAgainstPrevious(
       [finding("a.ts", "Close-path leak"), finding("c.ts", "Wrong monitor used")],
       previous,
+      new Map([["b.ts", new Set([9])]]),
     );
     assert.deepEqual(
       {
@@ -173,7 +174,7 @@ describe("classifyAgainstPrevious", () => {
       },
       {
         fresh: ["Wrong monitor used"],
-        carried: ["Close-path leak"],
+        carried: ["Leak on close"],
         resolved: ["Timer never cancelled"],
       },
     );
