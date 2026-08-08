@@ -295,7 +295,10 @@ async function main(): Promise<number> {
   if (values["summary-only"] !== true && findings.length > 0) {
     const commentable = parseCommentableLines(rawDiff);
     const { fresh } = classifyAgainstPrevious(dedupeFindings(findings), previous, commentable);
-    const { anchored, unanchored } = planInlineComments(fresh, commentable);
+    // Lows never post inline: an anchored comment is a work item no matter
+    // what its label says.
+    const inlineWorthy = fresh.filter((finding) => finding.severity !== "low");
+    const { anchored, unanchored } = planInlineComments(inlineWorthy, commentable);
     if (unanchored.length > 0) {
       console.log(`${unanchored.length} finding(s) had no diff anchor; summary only.`);
     }

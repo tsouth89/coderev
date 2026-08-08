@@ -1064,17 +1064,34 @@ export function formatReviewComment(input: {
   // still present, still anchored inline where valid — just not each eating a
   // screen of the summary.
   const renderCapped = (list: ReadonlyArray<GroupedFinding>) => {
-    list.slice(0, MAX_DETAILED_FINDINGS).forEach(renderFull);
-    const tail = list.slice(MAX_DETAILED_FINDINGS);
+    // Lows are real but rarely worth a fix-push-review round-trip, and every
+    // finding that LOOKS actionable becomes one when conscientious agents
+    // author the PRs — the measured workflow cost was the loop, not the
+    // findings. Lows fold into a collapsed section: visible on demand,
+    // invisible as work items.
+    const actionable = list.filter((finding) => finding.severity !== "low");
+    const lows = list.filter((finding) => finding.severity === "low");
+    const oneLiner = (finding: GroupedFinding) => {
+      const where = finding.locations
+        .map((location) => `\`${location.file}\`${location.line > 0 ? `:${location.line}` : ""}`)
+        .join(", ");
+      return `- **${finding.title}** \u2014 ${where} \u00b7 ${finding.severity}`;
+    };
+    actionable.slice(0, MAX_DETAILED_FINDINGS).forEach(renderFull);
+    const tail = actionable.slice(MAX_DETAILED_FINDINGS);
     if (tail.length > 0) {
       lines.push(`Also noted:`, "");
-      for (const finding of tail) {
-        const where = finding.locations
-          .map((location) => `\`${location.file}\`${location.line > 0 ? `:${location.line}` : ""}`)
-          .join(", ");
-        lines.push(`- **${finding.title}** \u2014 ${where} \u00b7 ${finding.severity}`);
-      }
+      for (const finding of tail) lines.push(oneLiner(finding));
       lines.push("");
+    }
+    if (lows.length > 0) {
+      lines.push(
+        "<details>",
+        `<summary>${lows.length} low-severity note(s) \u2014 informational, no action expected</summary>`,
+        "",
+      );
+      for (const finding of lows) lines.push(oneLiner(finding));
+      lines.push("", "</details>", "");
     }
   };
 
