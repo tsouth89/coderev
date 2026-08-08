@@ -159,12 +159,18 @@ export const SEVERITY_ORDER: Readonly<Record<FindingSeverity, number>> = {
   low: 2,
 };
 
+/** Generator-asserted fix cost; drives the pacing split (quick wins now, involved batched). */
+export type FindingEffort = "quick" | "involved";
+
 export interface ReviewFinding {
   readonly file: string;
   readonly line: number;
   readonly title: string;
   readonly detail: string;
   readonly severity: FindingSeverity;
+  /** Imperative minimal-fix direction plus the test that proves it, for agents. */
+  readonly fix?: string;
+  readonly effort?: FindingEffort;
   /** Which generator produced it, for the audit's which-model-earns-keeps question. Absent in single-generator mode. */
   readonly source?: string;
 }
@@ -272,9 +278,17 @@ export const FIND_SYSTEM_PROMPT = [
   "",
   "Report up to 10 findings, most severe first.",
   "",
+  "For each finding include a fix: one or two imperative sentences giving the",
+  "MINIMAL fix direction and, when a test would prove it, the test to add. The",
+  "remedy-safety rule applies to the fix text too: if stored user-settable data",
+  "is involved, the fix flags the ambiguity rather than prescribing a heal.",
+  'Include effort: "quick" when the fix is a few lines a competent agent lands',
+  'in one attempt, "involved" when it needs design, migration, or new',
+  "infrastructure.",
+  "",
   'Respond with JSON only: {"findings":[{"file":"path","line":123,"severity":"high",',
-  '"title":"one line","detail":"two or three sentences naming the concrete failure',
-  'mechanism"}]}',
+  '"effort":"quick","title":"one line","detail":"two or three sentences naming the',
+  'concrete failure mechanism","fix":"imperative minimal fix and proving test"}]}',
 ].join("\n");
 
 /**
@@ -476,6 +490,12 @@ export function parseFindings(raw: string): ReadonlyArray<ReviewFinding> {
       // Missing or invalid rates as medium: assuming high would let a silent
       // omission block merges under a future gate, assuming low would bury it.
       severity: severity === "high" || severity === "medium" || severity === "low" ? severity : "medium",
+      ...(typeof record.fix === "string" && record.fix.trim().length > 0
+        ? { fix: record.fix.trim() }
+        : {}),
+      ...(record.effort === "quick" || record.effort === "involved"
+        ? { effort: record.effort }
+        : {}),
     });
   }
   return findings;
@@ -803,6 +823,8 @@ export interface GroupedFinding {
   readonly title: string;
   readonly detail: string;
   readonly severity: FindingSeverity;
+  readonly fix?: string;
+  readonly effort?: FindingEffort;
   readonly locations: ReadonlyArray<{ readonly file: string; readonly line: number }>;
 }
 
@@ -847,6 +869,8 @@ export function dedupeFindings(findings: ReadonlyArray<ReviewFinding>): Array<Gr
         title: finding.title,
         detail: finding.detail,
         severity: finding.severity,
+        ...(finding.fix ? { fix: finding.fix } : {}),
+        ...(finding.effort ? { effort: finding.effort } : {}),
         locations: [{ file: finding.file, line: finding.line }],
       },
     });
@@ -1007,8 +1031,18 @@ export function planInlineComments(
       path: spot.file,
       line: spot.line,
       body: [
-        `**${finding.title}** \u00b7 severity: ${finding.severity}`,
+        `**${finding.title}** \u00b7 severity: ${finding.severity}${finding.effort === "quick" ? " \u00b7 quick win" : ""}`,
         ...(finding.detail.length > 0 ? ["", finding.detail] : []),
+        ...(finding.fix
+          ? [
+              "",
+              `<details><summary>Prompt for AI agents</summary>`,
+              "",
+              `${finding.fix} Verify against the current code first; if no longer valid, skip with a brief reason. Keep the change minimal.`,
+              "",
+              `</details>`,
+            ]
+          : []),
         ...(others.length > 0 ? ["", `Also applies to: ${others.join(", ")}`] : []),
         "",
         "<sub>CodeRev \u00b7 advisory</sub>",
@@ -1059,8 +1093,23 @@ export function formatReviewComment(input: {
     const rendered = finding.locations
       .map((location) => `\`${location.file}\`${location.line > 0 ? `:${location.line}` : ""}`)
       .join(", ");
-    lines.push(`   ${rendered} \u00b7 severity: ${finding.severity}`, "");
+    const effortTag = finding.effort === "quick" ? " \u00b7 quick win" : "";
+    lines.push(`   ${rendered} \u00b7 severity: ${finding.severity}${effortTag}`, "");
     if (finding.detail.length > 0) lines.push(`   ${finding.detail}`, "");
+    if (finding.fix) {
+      const spot = finding.locations[0];
+      const where = spot
+        ? `In \`${spot.file}\`${spot.line > 0 ? ` around line ${spot.line}` : ""}: `
+        : "";
+      lines.push(
+        "   <details><summary>Prompt for AI agents</summary>",
+        "",
+        `   ${where}${finding.fix} Verify against the current code first; if no longer valid, skip with a brief reason. Keep the change minimal.`,
+        "",
+        "   </details>",
+        "",
+      );
+    }
   };
 
   // Ten full-detail findings is a wall that buries the two that matter.
@@ -1153,10 +1202,10 @@ export function formatReviewComment(input: {
       : `a ${REFUTATION_PANEL_SIZE}-vote refutation panel`;
   lines.push(
     "",
-    "<sub>For coding agents: fix high findings now; batch mediums into at most " +
-      "one fix round; low notes are informational, do not fix them unless already " +
-      "editing that file; never exceed one CodeRev fix round per PR, decline " +
-      "remaining findings with a reason instead.</sub>",
+    "<sub>For coding agents: fix high findings and quick-win mediums now; batch " +
+      "involved mediums into at most one fix round; low notes are informational, " +
+      "do not fix them unless already editing that file; never exceed one CodeRev " +
+      "fix round per PR, decline remaining findings with a reason instead.</sub>",
     "",
     `<sub>Advisory. Findings generated by ${generators}, each filtered through ${panel} with the changed code in evidence.</sub>`,
     "",

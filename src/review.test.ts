@@ -76,6 +76,16 @@ describe("parseFindings", () => {
     );
   });
 
+  it("reads the fix direction and effort tag when present", () => {
+    const findings = parseFindings(
+      '{"findings":[{"file":"a.ts","line":5,"title":"Race","severity":"high","effort":"quick","fix":"Serialize per-session updates; add a reverse-completion-order test."},{"file":"b.ts","title":"x","effort":"heroic"}]}',
+    );
+    assert.equal(findings[0]?.fix, "Serialize per-session updates; add a reverse-completion-order test.");
+    assert.equal(findings[0]?.effort, "quick");
+    // Invalid effort is omitted, not guessed.
+    assert.equal(findings[1]?.effort, undefined);
+  });
+
   it("returns empty for a non-list findings field", () => {
     assert.deepEqual(parseFindings('{"findings":"none"}'), []);
   });
@@ -478,6 +488,28 @@ describe("pass-over-pass state", () => {
 });
 
 describe("formatReviewComment", () => {
+  it("renders the agent fix prompt and quick-win tag", () => {
+    const comment = formatReviewComment({
+      findings: [
+        {
+          file: "a.ts",
+          line: 12,
+          title: "Stale telemetry overwrite",
+          detail: "Older fiber can emit after newer.",
+          severity: "high",
+          effort: "quick",
+          fix: "Track a monotonic generation and discard older completions; add a reverse-order test.",
+        },
+      ],
+      model: "m",
+      truncated: false,
+    });
+    assert.match(comment, /quick win/);
+    assert.match(comment, /Prompt for AI agents/);
+    assert.match(comment, /monotonic generation/);
+    assert.match(comment, /Verify against the current code first/);
+  });
+
   it("tells coding agents the pacing protocol in every comment", () => {
     // Delivered globally through the comment because the comment is what the
     // PR-authoring agents actually read; the alternative was pasting the same
