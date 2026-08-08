@@ -54,7 +54,13 @@ export interface ReviewProviderPreset {
 export const REVIEW_PROVIDER_PRESETS: Readonly<Record<string, ReviewProviderPreset>> = {
   deepseek: {
     baseUrl: "https://api.deepseek.com/v1",
-    defaultModel: "deepseek-v4-pro",
+    // Flash viability trial (2026-08-08, user-directed): V4-Flash carries the
+    // whole Pro role — primary generation and the panel — at roughly a third
+    // of Pro's token rates with no reasoning-token bill. Watch keep rates in
+    // the run logs: the Muse-panel A/B failed by over-refuting (0/11 kept vs
+    // 3/8 control) within a day, and that is the failure shape to look for.
+    // Revert = restore "deepseek-v4-pro" here.
+    defaultModel: "deepseek-v4-flash",
     apiKeyEnvVar: "DEEPSEEK_API_KEY",
   },
   openrouter: {
