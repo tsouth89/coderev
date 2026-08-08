@@ -199,6 +199,7 @@ async function main(): Promise<number> {
     context,
     panelContext: fullContext,
     inventory,
+    previousFindings: previous,
     provider: passProvider,
     readCitedFile,
     ...(passFind2 ? { find2Provider: passFind2 } : {}),

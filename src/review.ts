@@ -71,6 +71,15 @@ const PANEL_CONCURRENCY = 8;
  * Distinct system prompts would give each seat its own cache miss over the
  * whole diff; a trailing suffix keeps one miss per finding.
  *
+ * SEAT ORDER IS LOAD-BEARING under pair-then-tiebreak voting: seats 0 and 1
+ * always vote; seat 2 only on splits. The first pair choice (checkability +
+ * mechanism) sidelined the scope seat — owner of the pre-existing,
+ * comment-answered, intent-restatement, and repo-characteristic grounds, the
+ * highest-frequency noise-killers — and fleet keep rates jumped from a
+ * measured 42% to 60-90% within a day. The pair is now mechanism + scope;
+ * checkability breaks ties. "The decision function is identical" was true of
+ * the arithmetic and false of seat attention.
+ *
  * A lens is added scrutiny, never exclusive jurisdiction. The first version
  * read as jurisdiction, and a strictly literal model (Muse Spark) voted only
  * its own ground — which breaks the arithmetic: each ground has exactly one
@@ -85,16 +94,6 @@ export const LENS_JURISDICTION_NOTE =
   "ANY of the listed grounds, refute it, whether or not that ground is your focus.";
 
 export const REFUTE_LENSES: ReadonlyArray<string> = [
-  [
-    "Your assigned focus for this vote: CHECKABILITY. Does the claim name the",
-    "concrete input, state, or sequence that triggers the failure? If it only",
-    "says something 'may', 'could', or 'potentially' happens without saying",
-    "when, refute it on that ground. Be hardest on predictions: a claim that",
-    "something 'will fail' or 'will break CI' is only as good as its verified",
-    "mechanism — every confirmed false positive so far was a confident",
-    "prediction, not a description of what the code does.",
-    LENS_JURISDICTION_NOTE,
-  ].join("\n"),
   [
     "Your assigned focus for this vote: MECHANISM ACCURACY. Re-read the",
     "relevant hunks and trace what the code actually does. If the code's real",
@@ -125,7 +124,21 @@ export const REFUTE_LENSES: ReadonlyArray<string> = [
     "If any of these hold, refute it on that ground.",
     LENS_JURISDICTION_NOTE,
   ].join("\n"),
+
+  [
+    "Your assigned focus for this vote: CHECKABILITY. Does the claim name the",
+    "concrete input, state, or sequence that triggers the failure? If it only",
+    "says something 'may', 'could', or 'potentially' happens without saying",
+    "when, refute it on that ground. Be hardest on predictions: a claim that",
+    "something 'will fail' or 'will break CI' is only as good as its verified",
+    "mechanism — every confirmed false positive so far was a confident",
+    "prediction, not a description of what the code does.",
+    LENS_JURISDICTION_NOTE,
+  ].join("\n"),
 ];
+
+/** Full-detail findings per comment; the severity-sorted tail renders as one-liners. */
+export const MAX_DETAILED_FINDINGS = 5;
 
 /** Zero for generation (reproducible), non-zero for the panel (independent). */
 const FIND_TEMPERATURE = 0;
@@ -326,13 +339,27 @@ export function buildFindPrompt(input: {
   readonly context?: string | null;
   /** Tracked files near the diff; resolves file-existence claims at source. */
   readonly inventory?: string | null;
+  /**
+   * Findings earlier passes already reported. Without this the generator
+   * re-hunts from scratch on every push and re-derives the same neighbourhood
+   * with shifted lines and rephrased titles — production showed the same
+   * stuck-flag finding rediscovered pass after pass. Only the presentation
+   * layer knew; now the hunter does.
+   */
+  readonly previousFindings?: ReadonlyArray<PreviousFinding> | null;
 }): string {
   const conventions = input.conventions ? `Repository conventions:\n\n${input.conventions}\n\n` : "";
   const inventory = input.inventory ? `${input.inventory}\n\n` : "";
+  const previous =
+    input.previousFindings && input.previousFindings.length > 0
+      ? `Already reported on earlier passes of this pull request (do NOT re-report these or close variants; hunt only what is new or materially changed):\n${input.previousFindings
+          .map((finding) => `- [${finding.severity}] ${finding.title} (${finding.file})`)
+          .join("\n")}\n\n`
+      : "";
   const context = input.context
     ? `Full contents of the changed files, for context (the diff below is what you are reviewing):\n\n${input.context}\n\n`
     : "";
-  return `${conventions}${inventory}${context}Review this diff.\n\n\`\`\`diff\n${input.diff}\n\`\`\``;
+  return `${conventions}${inventory}${previous}${context}Review this diff.\n\n\`\`\`diff\n${input.diff}\n\`\`\``;
 }
 
 /**
@@ -940,6 +967,25 @@ export function formatReviewComment(input: {
     if (finding.detail.length > 0) lines.push(`   ${finding.detail}`, "");
   };
 
+  // Ten full-detail findings is a wall that buries the two that matter.
+  // Severity-sorted full detail for the top few; the tail gets one line each,
+  // still present, still anchored inline where valid — just not each eating a
+  // screen of the summary.
+  const renderCapped = (list: ReadonlyArray<GroupedFinding>) => {
+    list.slice(0, MAX_DETAILED_FINDINGS).forEach(renderFull);
+    const tail = list.slice(MAX_DETAILED_FINDINGS);
+    if (tail.length > 0) {
+      lines.push(`Also noted:`, "");
+      for (const finding of tail) {
+        const where = finding.locations
+          .map((location) => `\`${location.file}\`${location.line > 0 ? `:${location.line}` : ""}`)
+          .join(", ");
+        lines.push(`- **${finding.title}** \u2014 ${where} \u00b7 ${finding.severity}`);
+      }
+      lines.push("");
+    }
+  };
+
   if (grouped.length === 0) {
     lines.push("No blocking issues found.");
     if (resolved.length > 0) {
@@ -948,7 +994,7 @@ export function formatReviewComment(input: {
   } else if (previous === null) {
     const noun = grouped.length === 1 ? "issue" : "issues";
     lines.push(`Found ${grouped.length} ${noun}:`, "");
-    grouped.forEach(renderFull);
+    renderCapped(grouped);
   } else {
     // Re-review of a PR this tool has already commented on. Findings the
     // previous pass reported stay visible — hiding an unresolved high would be
@@ -957,7 +1003,7 @@ export function formatReviewComment(input: {
     if (fresh.length > 0) {
       const noun = fresh.length === 1 ? "issue" : "issues";
       lines.push(`New in this pass: ${fresh.length} ${noun}.`, "");
-      fresh.forEach(renderFull);
+      renderCapped(fresh);
     } else {
       // "Nothing new" alone was misread as a clean pass in production while
       // three findings sat carried below it. The headline must say both.
@@ -1296,6 +1342,8 @@ export async function reviewDiff(input: {
   readonly panelContext?: string | null;
   /** Tracked-file inventory for the touched directories; see src/inventory.ts. */
   readonly inventory?: string | null;
+  /** Earlier passes' findings, so generation stops re-deriving them. */
+  readonly previousFindings?: ReadonlyArray<PreviousFinding> | null;
   /**
    * Reads a cited file's current contents so the panel can see the region a
    * finding names. Best-effort: null for anything unreadable. Kept as a
@@ -1322,6 +1370,7 @@ export async function reviewDiff(input: {
     conventions: input.conventions,
     context: input.context ?? null,
     inventory: input.inventory ?? null,
+    previousFindings: input.previousFindings ?? null,
   });
   const generate = async (provider: ResolvedReviewProvider) =>
     requestCompletion({

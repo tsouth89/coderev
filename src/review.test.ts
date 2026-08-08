@@ -120,6 +120,19 @@ describe("REFUTE_LENSES", () => {
   });
 });
 
+describe("REFUTE_LENSES seat order", () => {
+  it("keeps mechanism and scope in the always-voting pair", () => {
+    // Load-bearing under pair-then-tiebreak: seats 0 and 1 always vote, seat 2
+    // only on splits. When checkability held a pair seat and scope was the
+    // tiebreak, the scope grounds (pre-existing, comment-answered, intent,
+    // repo-characteristic) went mostly uncast and fleet keep rates jumped
+    // from 42% to 60-90% in a day.
+    assert.match(REFUTE_LENSES[0] ?? "", /MECHANISM ACCURACY/);
+    assert.match(REFUTE_LENSES[1] ?? "", /SCOPE AND INTENT/);
+    assert.match(REFUTE_LENSES[2] ?? "", /CHECKABILITY/);
+  });
+});
+
 describe("survivesPanel", () => {
   const vote = (refuted: boolean) => ({ refuted, reason: "" });
 
