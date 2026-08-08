@@ -23,6 +23,7 @@ import {
   dedupeFindings,
   formatReviewComment,
   parseCommentableLines,
+  parseDroppedFindings,
   parsePreviousState,
   parseStoredDiffHash,
   planInlineComments,
@@ -151,6 +152,7 @@ async function main(): Promise<number> {
     ...(cwd === undefined ? {} : { cwd }),
   });
   const previous = previousBody === null ? null : parsePreviousState(previousBody);
+  const previousDropped = previousBody === null ? null : parseDroppedFindings(previousBody);
   if (
     values.force !== true &&
     previousBody !== null &&
@@ -193,13 +195,22 @@ async function main(): Promise<number> {
       (rePass ? " [re-pass: single generator]" : "") +
       "...",
   );
-  const { findings, usage, findUsage, find2Usage, panelUsage, generationError } = await reviewDiff({
+  const {
+    findings,
+    adjudicated,
+    usage,
+    findUsage,
+    find2Usage,
+    panelUsage,
+    generationError,
+  } = await reviewDiff({
     diff,
     conventions,
     context,
     panelContext: fullContext,
     inventory,
     previousFindings: previous,
+    previousDropped,
     provider: passProvider,
     readCitedFile,
     ...(passFind2 ? { find2Provider: passFind2 } : {}),
@@ -247,6 +258,19 @@ async function main(): Promise<number> {
     truncated,
     previous,
     diffHash,
+    // This pass's drops plus the carried older ones, newest first; embedState
+    // bounds the stored list.
+    droppedThisPass: [
+      ...adjudicated
+        .filter((entry) => !entry.survived)
+        .map((entry) => ({
+          file: entry.finding.file,
+          line: entry.finding.line,
+          title: entry.finding.title,
+          severity: entry.finding.severity,
+        })),
+      ...(previousDropped ?? []),
+    ],
   });
   if (values.post !== true) {
     console.log(`\n${comment}`);

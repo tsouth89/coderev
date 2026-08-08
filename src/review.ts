@@ -245,8 +245,9 @@ export const FIND_SYSTEM_PROMPT = [
   "",
   "Once per review, if the diff changes behaviour and no test in it would fail",
   "without the change, report a single finding titled 'No failing test covers",
-  "this change' at severity medium. Skip this for docs, config, or test-only",
-  "diffs.",
+  "this change' at severity medium. Skip this for docs, config, manifests,",
+  "version bumps, dependency updates, or test-only diffs — a package.json",
+  "version change needs no failing test.",
   "",
   "When the diff REMOVES user-facing behaviour, report it once at severity",
   "medium as a question of intent, naming what the user loses. Clean code and",
@@ -347,6 +348,8 @@ export function buildFindPrompt(input: {
    * layer knew; now the hunter does.
    */
   readonly previousFindings?: ReadonlyArray<PreviousFinding> | null;
+  /** Candidates earlier panels refuted; suppressed from regeneration. */
+  readonly previousDropped?: ReadonlyArray<PreviousFinding> | null;
 }): string {
   const conventions = input.conventions ? `Repository conventions:\n\n${input.conventions}\n\n` : "";
   const inventory = input.inventory ? `${input.inventory}\n\n` : "";
@@ -356,10 +359,16 @@ export function buildFindPrompt(input: {
           .map((finding) => `- [${finding.severity}] ${finding.title} (${finding.file})`)
           .join("\n")}\n\n`
       : "";
+  const refuted =
+    input.previousDropped && input.previousDropped.length > 0
+      ? `Investigated on earlier passes and REFUTED by the verification panel (do NOT re-report these or rephrasings of them, unless the code at the cited location has changed since):\n${input.previousDropped
+          .map((finding) => `- ${finding.title} (${finding.file})`)
+          .join("\n")}\n\n`
+      : "";
   const context = input.context
     ? `Full contents of the changed files, for context (the diff below is what you are reviewing):\n\n${input.context}\n\n`
     : "";
-  return `${conventions}${inventory}${previous}${context}Review this diff.\n\n\`\`\`diff\n${input.diff}\n\`\`\``;
+  return `${conventions}${inventory}${previous}${refuted}${context}Review this diff.\n\n\`\`\`diff\n${input.diff}\n\`\`\``;
 }
 
 /**
@@ -561,21 +570,66 @@ export interface PreviousFinding {
   readonly severity: FindingSeverity;
 }
 
+/** Refuted candidates carried in state, bounded so the block stays small. */
+export const MAX_STORED_DROPPED = 20;
+
 export function embedState(
   findings: ReadonlyArray<PreviousFinding>,
   diffHash?: string | null,
+  dropped?: ReadonlyArray<PreviousFinding>,
 ): string {
-  const payload = findings.map(({ file, line, title, severity }) => ({
+  const strip = ({ file, line, title, severity }: PreviousFinding) => ({
     file,
     line,
     title,
     severity,
-  }));
-  const encoded = Buffer.from(
-    JSON.stringify({ findings: payload, ...(diffHash ? { diffHash } : {}) }),
-    "utf8",
-  ).toString("base64");
+  });
+  const payload: Record<string, unknown> = { findings: findings.map(strip) };
+  if (diffHash) payload.diffHash = diffHash;
+  if (dropped && dropped.length > 0) {
+    payload.dropped = dropped.slice(0, MAX_STORED_DROPPED).map(strip);
+  }
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
   return `<!-- coderev:state:v1 ${encoded} -->`;
+}
+
+/**
+ * Candidates the previous pass's panel refuted.
+ *
+ * Without this the drops had no memory: the generator re-derived a refuted
+ * claim with a new phrasing on the next push, and the panel's temperature-1
+ * dice got re-rolled until one pass kept it — observed in production as a
+ * WeakSet-clone claim dropped in one pass and kept 1-of-3 the next. Churn,
+ * and a slow precision leak.
+ */
+export function parseDroppedFindings(body: string): ReadonlyArray<PreviousFinding> | null {
+  const match = body.match(STATE_PATTERN);
+  if (!match?.[1]) return null;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(match[1], "base64").toString("utf8"));
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const list = (parsed as Record<string, unknown>).dropped;
+    if (!Array.isArray(list)) return null;
+    const dropped: Array<PreviousFinding> = [];
+    for (const entry of list) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const record = entry as Record<string, unknown>;
+      if (typeof record.file !== "string" || typeof record.title !== "string") continue;
+      const severity = record.severity;
+      dropped.push({
+        file: record.file,
+        line: typeof record.line === "number" ? record.line : 0,
+        title: record.title,
+        severity:
+          severity === "high" || severity === "medium" || severity === "low"
+            ? severity
+            : "medium",
+      });
+    }
+    return dropped;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -942,6 +996,8 @@ export function formatReviewComment(input: {
   readonly previous?: ReadonlyArray<PreviousFinding> | null;
   /** Hash of the reviewed diff, stored so an unchanged push can skip entirely. */
   readonly diffHash?: string | null;
+  /** This pass's refuted candidates, carried in state so drops stay dropped. */
+  readonly droppedThisPass?: ReadonlyArray<PreviousFinding> | null;
 }): string {
   const lines = [REVIEW_COMMENT_MARKER, "", "### Automated review", ""];
 
@@ -1051,6 +1107,7 @@ export function formatReviewComment(input: {
         })),
       ),
       input.diffHash ?? null,
+      input.droppedThisPass ?? undefined,
     ),
   );
   return lines.join("\n");
@@ -1344,6 +1401,8 @@ export async function reviewDiff(input: {
   readonly inventory?: string | null;
   /** Earlier passes' findings, so generation stops re-deriving them. */
   readonly previousFindings?: ReadonlyArray<PreviousFinding> | null;
+  /** Earlier passes' refuted candidates, so drops stay dropped. */
+  readonly previousDropped?: ReadonlyArray<PreviousFinding> | null;
   /**
    * Reads a cited file's current contents so the panel can see the region a
    * finding names. Best-effort: null for anything unreadable. Kept as a
@@ -1371,6 +1430,7 @@ export async function reviewDiff(input: {
     context: input.context ?? null,
     inventory: input.inventory ?? null,
     previousFindings: input.previousFindings ?? null,
+    previousDropped: input.previousDropped ?? null,
   });
   const generate = async (provider: ResolvedReviewProvider) =>
     requestCompletion({

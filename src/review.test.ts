@@ -7,6 +7,7 @@ import {
   extractJsonObject,
   formatReviewComment,
   LENS_JURISDICTION_NOTE,
+  parseDroppedFindings,
   parseFindings,
   parsePreviousState,
   parseStoredDiffHash,
@@ -419,6 +420,24 @@ describe("pass-over-pass state", () => {
 
   it("returns null state from a body without a state block", () => {
     assert.equal(parsePreviousState("<!-- coderev -->\nold format comment"), null);
+  });
+
+  it("round-trips refuted candidates so drops stay dropped", () => {
+    // Production: a WeakSet-clone claim refuted in one pass was re-derived
+    // with new phrasing the next pass and kept 1-of-3 on the re-rolled dice.
+    const comment = formatReviewComment({
+      findings: [],
+      model: "m",
+      truncated: false,
+      droppedThisPass: [
+        { file: "a.ts", line: 495, title: "WeakSet duplicate check fails on clones", severity: "medium" },
+      ],
+    });
+    const dropped = parseDroppedFindings(comment);
+    assert.equal(dropped?.length, 1);
+    assert.equal(dropped?.[0]?.title, "WeakSet duplicate check fails on clones");
+    // Kept-findings parsing is unaffected by the dropped list.
+    assert.deepEqual(parsePreviousState(comment), []);
   });
 
   it("round-trips the reviewed diff hash for the skip check", () => {
