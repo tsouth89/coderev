@@ -19,6 +19,7 @@ import {
 import { SEVERITY_ORDER } from "../src/review.ts";
 import { createHash } from "node:crypto";
 import {
+  assessDiffRisk,
   classifyAgainstPrevious,
   dedupeFindings,
   formatReviewComment,
@@ -185,14 +186,20 @@ async function main(): Promise<number> {
   // be pinned explicitly here: reviewDiff defaults it to the generator, and
   // the sole re-pass generator is the model the panel A/B rejected.
   const rePass = previous !== null && find2Provider !== undefined;
-  const passProvider = rePass ? (find2Provider as NonNullable<typeof find2Provider>) : provider;
-  const passFind2 = rePass ? undefined : find2Provider;
-  const panelProvider = refuteProvider ?? (rePass ? provider : undefined);
+  // Spend follows stakes: re-passes on risky diffs regain the precision
+  // generator (its catches cluster exactly there — races, lifecycles,
+  // migrations); calm re-passes keep the flat-priced single generator.
+  const risk = assessDiffRisk(diff);
+  if (risk.signals.length > 0) console.log(`Risk signals: ${risk.signals.join(", ")}`);
+  const singleGen = rePass && !risk.highStakes;
+  const passProvider = singleGen ? (find2Provider as NonNullable<typeof find2Provider>) : provider;
+  const passFind2 = singleGen ? undefined : find2Provider;
+  const panelProvider = refuteProvider ?? (singleGen ? provider : undefined);
   console.log(
     `Reviewing PR ${pr} with ${passProvider.model}` +
       (passFind2 ? ` + ${passFind2.model}` : "") +
       (panelProvider ? ` (panel: ${panelProvider.model})` : "") +
-      (rePass ? " [re-pass: single generator]" : "") +
+      (singleGen ? " [re-pass: single generator]" : rePass ? " [re-pass: high-stakes, dual generator]" : "") +
       "...",
   );
   const {

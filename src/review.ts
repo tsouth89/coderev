@@ -230,6 +230,10 @@ export const FIND_SYSTEM_PROMPT = [
   "  high must tell the reader what to read first.",
   '- "medium": a feature silently does not work, or wrong-but-recoverable output.',
   '- "low": cosmetic, diagnostic, defensive gaps, doc-versus-code mismatches.',
+  "If unsure between low and medium, rate medium: low findings are set aside",
+  "unverified, so low is reserved for findings you would not act on. A graded",
+  "scorecard contained one under-rated true finding; the cost of that misfile",
+  "is now total.",
   "If the triggering input cannot occur on real systems (impossible geometry,",
   "values a checked invariant already excludes), cap the severity at low no",
   "matter how correct the mechanism is: unreachable-but-true costs the reader",
@@ -1267,6 +1271,72 @@ export function backfillLineFromDiff(
     }
   }
   return bestHits > 0 ? bestLine : 0;
+}
+
+/**
+ * Deterministic stakes classifier for a diff, so spend can follow risk.
+ *
+ * The ledger's expensive catches cluster where these signals live: races,
+ * aborted/settled lifecycles, migrations, transactions. Uniform spending paid
+ * reasoning-model rates to re-review docs pushes while re-passes on reactor
+ * code ran without the precision generator. Signals are explicit keywords on
+ * ADDED lines plus risky path fragments, and the result is logged, so every
+ * routing decision is auditable in the run log the same way verdicts are.
+ */
+const RISK_CONTENT_SIGNALS = [
+  "mutex",
+  "lock",
+  "atomic",
+  "semaphore",
+  "race",
+  "abort",
+  "spawn",
+  "fork",
+  "thread",
+  "unsafe",
+  "transaction",
+  "migration",
+  "watchdog",
+  "settle",
+  "retry",
+  "timeout",
+  "cancel",
+  "interval",
+] as const;
+
+const RISK_PATH_SIGNALS = [
+  "/migrations/",
+  "/orchestration/",
+  "/state/",
+  "reducer",
+  "adapter",
+  "runtime",
+  "auth",
+] as const;
+
+export interface DiffRisk {
+  readonly highStakes: boolean;
+  readonly signals: ReadonlyArray<string>;
+}
+
+export function assessDiffRisk(diff: string): DiffRisk {
+  const signals = new Set<string>();
+  for (const match of diff.matchAll(/^\+\+\+ b\/(.+)$/gm)) {
+    const path = (match[1] ?? "").toLowerCase();
+    for (const fragment of RISK_PATH_SIGNALS) {
+      if (path.includes(fragment)) signals.add(`path:${fragment}`);
+    }
+  }
+  for (const line of diff.split(/\r?\n/)) {
+    if (!line.startsWith("+") || line.startsWith("+++")) continue;
+    const lower = line.toLowerCase();
+    for (const keyword of RISK_CONTENT_SIGNALS) {
+      if (lower.includes(keyword)) signals.add(keyword);
+    }
+  }
+  // Two distinct signals: one keyword can be incidental (a comment mentioning
+  // "timeout"); two independent signals rarely are.
+  return { highStakes: signals.size >= 2, signals: [...signals].sort() };
 }
 
 /** Run `tasks` with a bounded number in flight, preserving input order. */

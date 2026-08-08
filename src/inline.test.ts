@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  assessDiffRisk,
   backfillLineFromDiff,
   classifyAgainstPrevious,
   formatAnchorSnippet,
@@ -139,6 +140,28 @@ describe("backfillLineFromDiff", () => {
       backfillLineFromDiff({ file: "src/hotkeys.rs", line: 7, title: "RegisterHotKey" }, diff),
       7,
     );
+  });
+});
+
+describe("assessDiffRisk", () => {
+  it("flags a diff with two independent risk signals", () => {
+    const diff = [
+      "+++ b/apps/server/src/orchestration/decider.ts",
+      "+  const guard = new Mutex();",
+      "+  onAbort(() => guard.release());",
+    ].join("\n");
+    const risk = assessDiffRisk(diff);
+    assert.equal(risk.highStakes, true);
+    assert.ok(risk.signals.length >= 2);
+  });
+
+  it("keeps a docs diff calm even when a word grazes a keyword", () => {
+    // One incidental keyword (a sentence mentioning "timeout") must not
+    // promote a README change to high stakes; two independent signals rarely
+    // are incidental.
+    const diff = ["+++ b/README.md", "+Increase the timeout if your network is slow."].join("\n");
+    const risk = assessDiffRisk(diff);
+    assert.equal(risk.highStakes, false);
   });
 });
 
