@@ -478,6 +478,14 @@ describe("pass-over-pass state", () => {
 });
 
 describe("formatReviewComment", () => {
+  it("tells coding agents the pacing protocol in every comment", () => {
+    // Delivered globally through the comment because the comment is what the
+    // PR-authoring agents actually read; the alternative was pasting the same
+    // rule into every repo's AGENTS.md.
+    const comment = formatReviewComment({ findings: [], model: "m", truncated: false });
+    assert.match(comment, /never exceed one CodeRev fix round per PR/);
+  });
+
   it("carries a marker so the comment can be found later", () => {
     const comment = formatReviewComment({ findings: [], model: "m", truncated: false });
     assert.ok(comment.startsWith(REVIEW_COMMENT_MARKER));

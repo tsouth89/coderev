@@ -119,6 +119,24 @@ describe("pipeline against a streaming provider", () => {
     assert.equal(result.usage.cachedInputTokens, 300);
   });
 
+  it("sets aside low-severity candidates without spending panel votes", async () => {
+    reset();
+    behaviour.findResponse = JSON.stringify({
+      findings: [
+        { file: "a.ts", line: 10, title: "Data loss on close", severity: "high", detail: "d" },
+        { file: "b.ts", line: 20, title: "Doc comment stale", severity: "low", detail: "d" },
+      ],
+    });
+    const result = await reviewDiff({ diff: "x", conventions: null, provider });
+
+    // 1 find + 2 votes for the high; the low was set aside unverified.
+    assert.equal(behaviour.requestCount, 3);
+    assert.deepEqual(
+      result.findings.map((finding) => finding.title),
+      ["Data loss on close"],
+    );
+  });
+
   it("casts the tiebreak vote only when the first two seats split", async () => {
     reset();
     behaviour.findResponse = JSON.stringify({
