@@ -1425,6 +1425,23 @@ export async function reviewDiff(input: {
       : `${candidates.length} candidate finding(s); refuting.`,
   );
 
+  // Panel evidence goes to the files candidates actually cite, not every
+  // changed file: cache-miss input was measured at 38% of total spend, and
+  // most of it was full contents of files no finding is about. Anchor windows
+  // and the inventory still cover cited regions; whole-file evidence stays
+  // only where a claim points. Sections split on the context module's own
+  // "--- path ---" headers.
+  const citedFiles = new Set(candidates.map((candidate) => candidate.file));
+  const trimmedPanelContext = (() => {
+    const full = input.panelContext ?? null;
+    if (full === null || candidates.length === 0) return null;
+    const kept = full.split(/^(?=--- )/m).filter((section) => {
+      const header = section.match(/^--- (\S+?)(?: \(truncated[^)]*\))? ---/);
+      return header !== null && citedFiles.has(header[1] ?? "");
+    });
+    return kept.length > 0 ? kept.join("") : null;
+  })();
+
   const anchorSnippets = await Promise.all(
     candidates.map(async (candidate) => {
       if (!input.readCitedFile || candidate.line <= 0) return null;
@@ -1438,7 +1455,7 @@ export async function reviewDiff(input: {
     candidates,
     diff: input.diff,
     inventory: input.inventory ?? null,
-    context: input.panelContext ?? null,
+    context: trimmedPanelContext,
     anchorSnippets,
     provider: input.refuteProvider ?? input.provider,
     onProgress: note,

@@ -176,10 +176,21 @@ async function main(): Promise<number> {
     }
   };
 
+  // Re-passes generate on the flat-priced second model only. Pass one hunts
+  // with both; on pushes the reasoning generator's paid thinking mostly
+  // re-derives what pass memory already carries, while the measured recall
+  // engine (62% of fleet survivors) keeps hunting the delta. The panel must
+  // be pinned explicitly here: reviewDiff defaults it to the generator, and
+  // the sole re-pass generator is the model the panel A/B rejected.
+  const rePass = previous !== null && find2Provider !== undefined;
+  const passProvider = rePass ? (find2Provider as NonNullable<typeof find2Provider>) : provider;
+  const passFind2 = rePass ? undefined : find2Provider;
+  const panelProvider = refuteProvider ?? (rePass ? provider : undefined);
   console.log(
-    `Reviewing PR ${pr} with ${provider.model}` +
-      (find2Provider ? ` + ${find2Provider.model}` : "") +
-      (refuteProvider ? ` (panel: ${refuteProvider.model})` : "") +
+    `Reviewing PR ${pr} with ${passProvider.model}` +
+      (passFind2 ? ` + ${passFind2.model}` : "") +
+      (panelProvider ? ` (panel: ${panelProvider.model})` : "") +
+      (rePass ? " [re-pass: single generator]" : "") +
       "...",
   );
   const { findings, usage, findUsage, find2Usage, panelUsage, generationError } = await reviewDiff({
@@ -188,20 +199,18 @@ async function main(): Promise<number> {
     context,
     panelContext: fullContext,
     inventory,
-    provider,
+    provider: passProvider,
     readCitedFile,
-    ...(find2Provider ? { find2Provider } : {}),
-    ...(refuteProvider ? { refuteProvider } : {}),
+    ...(passFind2 ? { find2Provider: passFind2 } : {}),
+    ...(panelProvider ? { refuteProvider: panelProvider } : {}),
     onProgress: (message) => console.log(message),
   });
 
   // With hybrid routing the stages bill at different rates; summing per-stage
   // estimates is the only honest total. Either stage unknown -> total unknown.
-  const findCost = estimateCostUsd(provider.model, findUsage, process.env);
-  const find2Cost = find2Provider
-    ? estimateCostUsd(find2Provider.model, find2Usage, process.env)
-    : 0;
-  const panelCost = estimateCostUsd((refuteProvider ?? provider).model, panelUsage, process.env);
+  const findCost = estimateCostUsd(passProvider.model, findUsage, process.env);
+  const find2Cost = passFind2 ? estimateCostUsd(passFind2.model, find2Usage, process.env) : 0;
+  const panelCost = estimateCostUsd((panelProvider ?? provider).model, panelUsage, process.env);
   const cost =
     findCost === null || panelCost === null || find2Cost === null
       ? null
