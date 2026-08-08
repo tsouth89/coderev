@@ -114,7 +114,7 @@ describe("resolveRefuteProvider", () => {
     });
     assert.partialDeepStrictEqual(resolved?.ok && resolved.provider, {
       baseUrl: "https://api.deepseek.com/v1",
-      model: "deepseek-v4-pro",
+      model: "deepseek-v4-flash",
       apiKey: "ds-key",
     });
   });
@@ -129,7 +129,7 @@ describe("resolveRefuteProvider", () => {
       REVIEW_REFUTE_PROVIDER: "deepseek",
       DEEPSEEK_API_KEY: "k2",
     });
-    assert.equal(resolved?.ok && resolved.provider.model, "deepseek-v4-pro");
+    assert.equal(resolved?.ok && resolved.provider.model, "deepseek-v4-flash");
   });
 
   it("does not leak a custom find base URL to the refute provider", () => {
