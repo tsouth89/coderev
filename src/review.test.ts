@@ -5,6 +5,7 @@ import {
   buildRefutePrompt,
   dedupeFindings,
   extractJsonObject,
+  FIND_SYSTEM_PROMPT,
   formatReviewComment,
   LENS_JURISDICTION_NOTE,
   parseDroppedFindings,
@@ -19,6 +20,14 @@ import {
   truncateDiff,
   unionCandidates,
 } from "./review.ts";
+
+describe("FIND_SYSTEM_PROMPT output contract", () => {
+  it("pins confidence and disposition in both instructions and JSON shape", () => {
+    assert.match(FIND_SYSTEM_PROMPT, /Include confidence: "high", "medium", or "low"/);
+    assert.match(FIND_SYSTEM_PROMPT, /Include disposition: "block"/);
+    assert.match(FIND_SYSTEM_PROMPT, /"confidence":"high","disposition":"block"/);
+  });
+});
 
 describe("extractJsonObject", () => {
   it("parses a bare object", () => {
@@ -84,6 +93,16 @@ describe("parseFindings", () => {
     assert.equal(findings[0]?.effort, "quick");
     // Invalid effort is omitted, not guessed.
     assert.equal(findings[1]?.effort, undefined);
+  });
+
+  it("reads valid confidence and disposition without guessing invalid values", () => {
+    const findings = parseFindings(
+      '{"findings":[{"file":"a.ts","title":"x","confidence":"high","disposition":"follow-up"},{"file":"b.ts","title":"y","confidence":"certain","disposition":"urgent"}]}',
+    );
+    assert.equal(findings[0]?.confidence, "high");
+    assert.equal(findings[0]?.disposition, "follow-up");
+    assert.equal(findings[1]?.confidence, undefined);
+    assert.equal(findings[1]?.disposition, undefined);
   });
 
   it("returns empty for a non-list findings field", () => {
@@ -561,6 +580,20 @@ describe("formatReviewComment", () => {
     assert.match(comment, /severity: high/);
     // The gate-relevant finding must lead the list.
     assert.ok(comment.indexOf("Data loss") < comment.indexOf("Doc mismatch"));
+  });
+
+  it("renders and sorts disposition before severity", () => {
+    const comment = formatReviewComment({
+      findings: [
+        { file: "a.ts", line: 1, title: "Severe follow-up", detail: "", severity: "high", confidence: "high", disposition: "follow-up" },
+        { file: "b.ts", line: 2, title: "Small blocker", detail: "", severity: "low", confidence: "medium", disposition: "block" },
+      ],
+      model: "m",
+      truncated: false,
+    });
+    assert.match(comment, /disposition: block \u00b7 confidence: medium \u00b7 severity: low/);
+    assert.ok(comment.indexOf("Small blocker") < comment.indexOf("Severe follow-up"));
+    assert.match(comment, /fix BLOCK and FIX IF QUICK findings now/);
   });
 
   it("discloses truncation rather than silently reviewing part of a diff", () => {

@@ -162,12 +162,33 @@ export const SEVERITY_ORDER: Readonly<Record<FindingSeverity, number>> = {
 /** Generator-asserted fix cost; drives the pacing split (quick wins now, involved batched). */
 export type FindingEffort = "quick" | "involved";
 
+/** Generator-asserted certainty; the panel still independently verifies reality. */
+export type FindingConfidence = "high" | "medium" | "low";
+
+/** Generator-asserted action lane, separating reality from fix-now urgency. */
+export type FindingDisposition = "block" | "fix-if-quick" | "follow-up" | "advisory";
+
+export const DISPOSITION_ORDER: Readonly<Record<FindingDisposition, number>> = {
+  block: 0,
+  "fix-if-quick": 1,
+  "follow-up": 2,
+  advisory: 3,
+};
+
+const CONFIDENCE_ORDER: Readonly<Record<FindingConfidence, number>> = {
+  high: 0,
+  medium: 1,
+  low: 2,
+};
+
 export interface ReviewFinding {
   readonly file: string;
   readonly line: number;
   readonly title: string;
   readonly detail: string;
   readonly severity: FindingSeverity;
+  readonly confidence?: FindingConfidence;
+  readonly disposition?: FindingDisposition;
   /** Imperative minimal-fix direction plus the test that proves it, for agents. */
   readonly fix?: string;
   readonly effort?: FindingEffort;
@@ -236,10 +257,8 @@ export const FIND_SYSTEM_PROMPT = [
   "  high must tell the reader what to read first.",
   '- "medium": a feature silently does not work, or wrong-but-recoverable output.',
   '- "low": cosmetic, diagnostic, defensive gaps, doc-versus-code mismatches.',
-  "If unsure between low and medium, rate medium: low findings are set aside",
-  "unverified, so low is reserved for findings you would not act on. A graded",
-  "scorecard contained one under-rated true finding; the cost of that misfile",
-  "is now total.",
+  "If unsure between low and medium, rate medium. A graded scorecard contained",
+  "one under-rated true finding, so low is reserved for genuinely minor outcomes.",
   "If the triggering input cannot occur on real systems (impossible geometry,",
   "values a checked invariant already excludes), cap the severity at low no",
   "matter how correct the mechanism is: unreachable-but-true costs the reader",
@@ -285,9 +304,14 @@ export const FIND_SYSTEM_PROMPT = [
   'Include effort: "quick" when the fix is a few lines a competent agent lands',
   'in one attempt, "involved" when it needs design, migration, or new',
   "infrastructure.",
+  'Include confidence: "high", "medium", or "low" for how strongly the cited',
+  "code supports the concrete mechanism.",
+  'Include disposition: "block" when merge should wait, "fix-if-quick" for a',
+  'small worthwhile fix, "follow-up" for real work that should leave this PR,',
+  'or "advisory" when no tracked action is warranted.',
   "",
   'Respond with JSON only: {"findings":[{"file":"path","line":123,"severity":"high",',
-  '"effort":"quick","title":"one line","detail":"two or three sentences naming the',
+  '"confidence":"high","disposition":"block","effort":"quick","title":"one line","detail":"two or three sentences naming the',
   'concrete failure mechanism","fix":"imperative minimal fix and proving test"}]}',
 ].join("\n");
 
@@ -482,6 +506,8 @@ export function parseFindings(raw: string): ReadonlyArray<ReviewFinding> {
     if (file.length === 0 || title.length === 0) continue;
 
     const severity = record.severity;
+    const confidence = record.confidence;
+    const disposition = record.disposition;
     findings.push({
       file,
       line: typeof record.line === "number" && Number.isFinite(record.line) ? record.line : 0,
@@ -490,6 +516,15 @@ export function parseFindings(raw: string): ReadonlyArray<ReviewFinding> {
       // Missing or invalid rates as medium: assuming high would let a silent
       // omission block merges under a future gate, assuming low would bury it.
       severity: severity === "high" || severity === "medium" || severity === "low" ? severity : "medium",
+      ...(confidence === "high" || confidence === "medium" || confidence === "low"
+        ? { confidence }
+        : {}),
+      ...(disposition === "block" ||
+      disposition === "fix-if-quick" ||
+      disposition === "follow-up" ||
+      disposition === "advisory"
+        ? { disposition }
+        : {}),
       ...(typeof record.fix === "string" && record.fix.trim().length > 0
         ? { fix: record.fix.trim() }
         : {}),
@@ -592,6 +627,8 @@ export interface PreviousFinding {
   readonly line: number;
   readonly title: string;
   readonly severity: FindingSeverity;
+  readonly confidence?: FindingConfidence;
+  readonly disposition?: FindingDisposition;
 }
 
 /** Refuted candidates carried in state, bounded so the block stays small. */
@@ -602,11 +639,13 @@ export function embedState(
   diffHash?: string | null,
   dropped?: ReadonlyArray<PreviousFinding>,
 ): string {
-  const strip = ({ file, line, title, severity }: PreviousFinding) => ({
+  const strip = ({ file, line, title, severity, confidence, disposition }: PreviousFinding) => ({
     file,
     line,
     title,
     severity,
+    ...(confidence ? { confidence } : {}),
+    ...(disposition ? { disposition } : {}),
   });
   const payload: Record<string, unknown> = { findings: findings.map(strip) };
   if (diffHash) payload.diffHash = diffHash;
@@ -640,6 +679,8 @@ export function parseDroppedFindings(body: string): ReadonlyArray<PreviousFindin
       const record = entry as Record<string, unknown>;
       if (typeof record.file !== "string" || typeof record.title !== "string") continue;
       const severity = record.severity;
+      const confidence = record.confidence;
+      const disposition = record.disposition;
       dropped.push({
         file: record.file,
         line: typeof record.line === "number" ? record.line : 0,
@@ -648,6 +689,15 @@ export function parseDroppedFindings(body: string): ReadonlyArray<PreviousFindin
           severity === "high" || severity === "medium" || severity === "low"
             ? severity
             : "medium",
+        ...(confidence === "high" || confidence === "medium" || confidence === "low"
+          ? { confidence }
+          : {}),
+        ...(disposition === "block" ||
+        disposition === "fix-if-quick" ||
+        disposition === "follow-up" ||
+        disposition === "advisory"
+          ? { disposition }
+          : {}),
       });
     }
     return dropped;
@@ -692,6 +742,8 @@ export function parsePreviousState(body: string): ReadonlyArray<PreviousFinding>
       const record = entry as Record<string, unknown>;
       if (typeof record.file !== "string" || typeof record.title !== "string") continue;
       const severity = record.severity;
+      const confidence = record.confidence;
+      const disposition = record.disposition;
       findings.push({
         file: record.file,
         line: typeof record.line === "number" ? record.line : 0,
@@ -700,6 +752,15 @@ export function parsePreviousState(body: string): ReadonlyArray<PreviousFinding>
           severity === "high" || severity === "medium" || severity === "low"
             ? severity
             : "medium",
+        ...(confidence === "high" || confidence === "medium" || confidence === "low"
+          ? { confidence }
+          : {}),
+        ...(disposition === "block" ||
+        disposition === "fix-if-quick" ||
+        disposition === "follow-up" ||
+        disposition === "advisory"
+          ? { disposition }
+          : {}),
       });
     }
     return findings;
@@ -812,8 +873,24 @@ export function unionCandidates(
     // Same concern at two severities keeps the higher one: a duplicate must
     // never launder a defect down to the rating that gets skimmed past.
     const existing = union[existingIndex];
-    if (existing && SEVERITY_ORDER[candidate.severity] < SEVERITY_ORDER[existing.severity]) {
-      union[existingIndex] = { ...existing, severity: candidate.severity };
+    if (existing) {
+      union[existingIndex] = {
+        ...existing,
+        severity:
+          SEVERITY_ORDER[candidate.severity] < SEVERITY_ORDER[existing.severity]
+            ? candidate.severity
+            : existing.severity,
+        ...((candidate.disposition !== undefined &&
+          (existing.disposition === undefined ||
+            DISPOSITION_ORDER[candidate.disposition] < DISPOSITION_ORDER[existing.disposition]))
+          ? { disposition: candidate.disposition }
+          : {}),
+        ...((candidate.confidence !== undefined &&
+          (existing.confidence === undefined ||
+            CONFIDENCE_ORDER[candidate.confidence] < CONFIDENCE_ORDER[existing.confidence]))
+          ? { confidence: candidate.confidence }
+          : {}),
+      };
     }
   }
   return union;
@@ -823,6 +900,8 @@ export interface GroupedFinding {
   readonly title: string;
   readonly detail: string;
   readonly severity: FindingSeverity;
+  readonly confidence?: FindingConfidence;
+  readonly disposition?: FindingDisposition;
   readonly fix?: string;
   readonly effort?: FindingEffort;
   readonly locations: ReadonlyArray<{ readonly file: string; readonly line: number }>;
@@ -859,6 +938,17 @@ export function dedupeFindings(findings: ReadonlyArray<ReviewFinding>): Array<Gr
           SEVERITY_ORDER[finding.severity] < SEVERITY_ORDER[existing.grouped.severity]
             ? finding.severity
             : existing.grouped.severity,
+        ...((finding.disposition !== undefined &&
+          (existing.grouped.disposition === undefined ||
+            DISPOSITION_ORDER[finding.disposition] <
+              DISPOSITION_ORDER[existing.grouped.disposition]))
+          ? { disposition: finding.disposition }
+          : {}),
+        ...((finding.confidence !== undefined &&
+          (existing.grouped.confidence === undefined ||
+            CONFIDENCE_ORDER[finding.confidence] < CONFIDENCE_ORDER[existing.grouped.confidence]))
+          ? { confidence: finding.confidence }
+          : {}),
         locations: [...existing.grouped.locations, { file: finding.file, line: finding.line }],
       };
       continue;
@@ -869,6 +959,8 @@ export function dedupeFindings(findings: ReadonlyArray<ReviewFinding>): Array<Gr
         title: finding.title,
         detail: finding.detail,
         severity: finding.severity,
+        ...(finding.confidence ? { confidence: finding.confidence } : {}),
+        ...(finding.disposition ? { disposition: finding.disposition } : {}),
         ...(finding.fix ? { fix: finding.fix } : {}),
         ...(finding.effort ? { effort: finding.effort } : {}),
         locations: [{ file: finding.file, line: finding.line }],
@@ -1003,6 +1095,20 @@ export interface InlinePlan {
   readonly unanchored: ReadonlyArray<GroupedFinding>;
 }
 
+function formatFindingTags(finding: {
+  readonly severity: FindingSeverity;
+  readonly confidence?: FindingConfidence;
+  readonly disposition?: FindingDisposition;
+  readonly effort?: FindingEffort;
+}): string {
+  return [
+    ...(finding.disposition ? [`disposition: ${finding.disposition}`] : []),
+    ...(finding.confidence ? [`confidence: ${finding.confidence}`] : []),
+    `severity: ${finding.severity}`,
+    ...(finding.effort === "quick" ? ["quick win"] : []),
+  ].join(" \u00b7 ");
+}
+
 /**
  * Anchor each fresh finding at its first diff-valid location; one inline
  * comment per finding, never per location — a family finding with three call
@@ -1031,7 +1137,7 @@ export function planInlineComments(
       path: spot.file,
       line: spot.line,
       body: [
-        `**${finding.title}** \u00b7 severity: ${finding.severity}${finding.effort === "quick" ? " \u00b7 quick win" : ""}`,
+        `**${finding.title}** \u00b7 ${formatFindingTags(finding)}`,
         ...(finding.detail.length > 0 ? ["", finding.detail] : []),
         ...(finding.fix
           ? [
@@ -1071,12 +1177,14 @@ export function formatReviewComment(input: {
 }): string {
   const lines = [REVIEW_COMMENT_MARKER, "", "### Automated review", ""];
 
-  // Stable sort by severity so the gate-relevant findings lead; within a tier
-  // the generator's own most-severe-first ordering is preserved.
+  // Disposition is the action contract, so it leads severity. Unknown values
+  // sort last rather than being guessed into an urgent lane.
   const grouped = dedupeFindings(input.findings)
     .map((finding, index) => ({ finding, index }))
     .sort(
       (a, b) =>
+        (a.finding.disposition === undefined ? 4 : DISPOSITION_ORDER[a.finding.disposition]) -
+          (b.finding.disposition === undefined ? 4 : DISPOSITION_ORDER[b.finding.disposition]) ||
         SEVERITY_ORDER[a.finding.severity] - SEVERITY_ORDER[b.finding.severity] ||
         a.index - b.index,
     )
@@ -1093,8 +1201,7 @@ export function formatReviewComment(input: {
     const rendered = finding.locations
       .map((location) => `\`${location.file}\`${location.line > 0 ? `:${location.line}` : ""}`)
       .join(", ");
-    const effortTag = finding.effort === "quick" ? " \u00b7 quick win" : "";
-    lines.push(`   ${rendered} \u00b7 severity: ${finding.severity}${effortTag}`, "");
+    lines.push(`   ${rendered} \u00b7 ${formatFindingTags(finding)}`, "");
     if (finding.detail.length > 0) lines.push(`   ${finding.detail}`, "");
     if (finding.fix) {
       const spot = finding.locations[0];
@@ -1113,38 +1220,22 @@ export function formatReviewComment(input: {
   };
 
   // Ten full-detail findings is a wall that buries the two that matter.
-  // Severity-sorted full detail for the top few; the tail gets one line each,
+  // Disposition/severity-sorted full detail for the top few; the tail gets one line each,
   // still present, still anchored inline where valid — just not each eating a
   // screen of the summary.
   const renderCapped = (list: ReadonlyArray<GroupedFinding>) => {
-    // Lows are real but rarely worth a fix-push-review round-trip, and every
-    // finding that LOOKS actionable becomes one when conscientious agents
-    // author the PRs — the measured workflow cost was the loop, not the
-    // findings. Lows fold into a collapsed section: visible on demand,
-    // invisible as work items.
-    const actionable = list.filter((finding) => finding.severity !== "low");
-    const lows = list.filter((finding) => finding.severity === "low");
     const oneLiner = (finding: GroupedFinding) => {
       const where = finding.locations
         .map((location) => `\`${location.file}\`${location.line > 0 ? `:${location.line}` : ""}`)
         .join(", ");
-      return `- **${finding.title}** \u2014 ${where} \u00b7 ${finding.severity}`;
+      return `- **${finding.title}** \u2014 ${where} \u00b7 ${formatFindingTags(finding)}`;
     };
-    actionable.slice(0, MAX_DETAILED_FINDINGS).forEach(renderFull);
-    const tail = actionable.slice(MAX_DETAILED_FINDINGS);
+    list.slice(0, MAX_DETAILED_FINDINGS).forEach(renderFull);
+    const tail = list.slice(MAX_DETAILED_FINDINGS);
     if (tail.length > 0) {
       lines.push(`Also noted:`, "");
       for (const finding of tail) lines.push(oneLiner(finding));
       lines.push("");
-    }
-    if (lows.length > 0) {
-      lines.push(
-        "<details>",
-        `<summary>${lows.length} low-severity note(s) \u2014 informational, no action expected</summary>`,
-        "",
-      );
-      for (const finding of lows) lines.push(oneLiner(finding));
-      lines.push("", "</details>", "");
     }
   };
 
@@ -1182,7 +1273,7 @@ export function formatReviewComment(input: {
       lines.push("", `Still open from earlier passes:`, "");
       for (const entry of carried) {
         const where = `\`${entry.file}\`${entry.line > 0 ? `:${entry.line}` : ""}`;
-        lines.push(`- **${entry.title}** \u2014 ${where} \u00b7 ${entry.severity}`);
+        lines.push(`- **${entry.title}** \u2014 ${where} \u00b7 ${formatFindingTags(entry)}`);
       }
     }
     if (resolved.length > 0) {
@@ -1202,10 +1293,8 @@ export function formatReviewComment(input: {
       : `a ${REFUTATION_PANEL_SIZE}-vote refutation panel`;
   lines.push(
     "",
-    "<sub>For coding agents: fix high findings and quick-win mediums now; batch " +
-      "involved mediums into at most one fix round; low notes are informational, " +
-      "do not fix them unless already editing that file; never exceed one CodeRev " +
-      "fix round per PR, decline remaining findings with a reason instead.</sub>",
+    "<sub>For coding agents: fix BLOCK and FIX IF QUICK findings now; everything " +
+      "else is tracked or informational; never exceed one CodeRev fix round per PR.</sub>",
     "",
     `<sub>Advisory. Findings generated by ${generators}, each filtered through ${panel} with the changed code in evidence.</sub>`,
     "",
@@ -1217,6 +1306,8 @@ export function formatReviewComment(input: {
             line: location.line,
             title: finding.title,
             severity: finding.severity,
+            ...(finding.confidence ? { confidence: finding.confidence } : {}),
+            ...(finding.disposition ? { disposition: finding.disposition } : {}),
           })),
         ),
         ...carried,
@@ -1679,44 +1770,11 @@ export async function reviewDiff(input: {
     secondary !== null && secondary.ok && input.find2Provider
       ? tag(parseFindings(secondary.result.content), input.find2Provider.model)
       : [];
-  // Guardrail, sized from a 50-run fleet sweep: candidates average ~4 per
-  // review and the busiest real run hit 9, so a cap of 12 almost never binds —
-  // it exists for the pathological run where a generator floods, because every
-  // candidate costs at least two panel votes. Severity-sorted first, so what
-  // falls off is the low tail, and the log says what was dropped.
-  const MAX_PANEL_CANDIDATES = input.previousFindings ? 6 : 12;
-  let candidates = unionCandidates(primaryCandidates, secondaryCandidates).map((candidate) =>
+  const candidates = unionCandidates(primaryCandidates, secondaryCandidates).map((candidate) =>
     candidate.line > 0
       ? candidate
       : { ...candidate, line: backfillLineFromDiff(candidate, input.diff) },
   );
-
-  // Low-severity candidates never reach the panel: since lows render as
-  // collapsed informational notes and never post inline, paying two reasoning
-  // votes each to verify them bought nothing — and the severity rubric is
-  // scorecard-validated (author-confirmed tags matched on every graded
-  // finding). Logged here so the audit still sees what was set aside.
-  const lows = candidates.filter((candidate) => candidate.severity === "low");
-  if (lows.length > 0) {
-    note(
-      `Setting aside ${lows.length} low-severity candidate(s) unverified: ${lows
-        .map((candidate) => candidate.title)
-        .join(" | ")}`,
-    );
-    candidates = candidates.filter((candidate) => candidate.severity !== "low");
-  }
-  if (candidates.length > MAX_PANEL_CANDIDATES) {
-    const ranked = candidates
-      .map((candidate, index) => ({ candidate, index }))
-      .sort(
-        (a, b) =>
-          SEVERITY_ORDER[a.candidate.severity] - SEVERITY_ORDER[b.candidate.severity] ||
-          a.index - b.index,
-      )
-      .map((entry) => entry.candidate);
-    note(`Capping panel input to ${MAX_PANEL_CANDIDATES} of ${candidates.length} candidates (severity-ranked).`);
-    candidates = ranked.slice(0, MAX_PANEL_CANDIDATES);
-  }
   // A stage that made no request has a known usage of zero, not an unknown
   // one: EMPTY_USAGE's reported:false would AND-poison every total it is
   // summed into and turn a fully-measured single-generator review into
@@ -1729,23 +1787,6 @@ export async function reviewDiff(input: {
       ? `${candidates.length} candidate finding(s) (${primaryCandidates.length} + ${secondaryCandidates.length}, deduped); refuting.`
       : `${candidates.length} candidate finding(s); refuting.`,
   );
-
-  // Panel evidence goes to the files candidates actually cite, not every
-  // changed file: cache-miss input was measured at 38% of total spend, and
-  // most of it was full contents of files no finding is about. Anchor windows
-  // and the inventory still cover cited regions; whole-file evidence stays
-  // only where a claim points. Sections split on the context module's own
-  // "--- path ---" headers.
-  const citedFiles = new Set(candidates.map((candidate) => candidate.file));
-  const trimmedPanelContext = (() => {
-    const full = input.panelContext ?? null;
-    if (full === null || candidates.length === 0) return null;
-    const kept = full.split(/^(?=--- )/m).filter((section) => {
-      const header = section.match(/^--- (\S+?)(?: \(truncated[^)]*\))? ---/);
-      return header !== null && citedFiles.has(header[1] ?? "");
-    });
-    return kept.length > 0 ? kept.join("") : null;
-  })();
 
   const anchorSnippets = await Promise.all(
     candidates.map(async (candidate) => {
@@ -1760,7 +1801,7 @@ export async function reviewDiff(input: {
     candidates,
     diff: input.diff,
     inventory: input.inventory ?? null,
-    context: trimmedPanelContext,
+    context: input.panelContext ?? null,
     anchorSnippets,
     provider: input.refuteProvider ?? input.provider,
     onProgress: note,

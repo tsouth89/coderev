@@ -9,9 +9,10 @@ inputs:
     default: ${{ github.event.pull_request.number }}
   api-key:
     description: Model API key. Pass a secret, never a literal.
-    required: true
+    required: false
+    default: ""
   provider:
-    description: deepseek (default), openrouter, or openai.
+    description: deepseek (default), openrouter, openai, meta, or exec.
     required: false
     default: deepseek
   model:
@@ -20,6 +21,10 @@ inputs:
     default: ""
   base-url:
     description: Overrides the base URL for any OpenAI-compatible endpoint.
+    required: false
+    default: ""
+  exec-command:
+    description: Command for the exec provider. Use grok for CodeRev's bundled stdin-safe Grok wrapper.
     required: false
     default: ""
   conventions:
@@ -46,6 +51,10 @@ inputs:
     description: Second generator's API key. Empty degrades to single-generator with a warning.
     required: false
     default: ""
+  find2-exec-command:
+    description: Command for an exec second generator. Empty inherits exec-command.
+    required: false
+    default: ""
   refute-provider:
     description: Route the refutation panel to a different provider (e.g. a non-reasoning model whose votes cost a fraction). Empty keeps the generator's provider.
     required: false
@@ -58,11 +67,27 @@ inputs:
     description: Panel provider's API key. Empty disables the panel override.
     required: false
     default: ""
+  refute-exec-command:
+    description: Command for an exec refutation panel. Empty inherits exec-command.
+    required: false
+    default: ""
   gate:
     description: >-
       Fail the check (exit 3) when a surviving finding meets this severity
       (high, medium, or low). Fail-open on provider/infra errors. Empty keeps
       the check advisory. Pair with removing continue-on-error in the workflow.
+    required: false
+    default: ""
+  linear-follow-ups:
+    description: Create Linear issues for verified follow-up findings with high confidence.
+    required: false
+    default: "false"
+  linear-api-key:
+    description: Linear personal API key; required only when linear-follow-ups is true.
+    required: false
+    default: ""
+  linear-team-id:
+    description: Linear team ID for follow-up issues; required only when linear-follow-ups is true.
     required: false
     default: ""
 
@@ -83,15 +108,24 @@ runs:
         REVIEW_PROVIDER: ${{ inputs.provider }}
         REVIEW_MODEL: ${{ inputs.model }}
         REVIEW_API_BASE_URL: ${{ inputs.base-url }}
-        REVIEW_FIND2_PROVIDER: ${{ inputs.find2-api-key != '' && inputs.find2-provider || '' }}
-        REVIEW_FIND2_MODEL: ${{ inputs.find2-api-key != '' && inputs.find2-model || '' }}
+        REVIEW_EXEC_COMMAND: ${{ inputs.exec-command }}
+        REVIEW_FIND2_PROVIDER: ${{ (inputs.find2-api-key != '' || inputs.find2-exec-command != '') && inputs.find2-provider || '' }}
+        REVIEW_FIND2_MODEL: ${{ (inputs.find2-api-key != '' || inputs.find2-exec-command != '') && inputs.find2-model || '' }}
         REVIEW_FIND2_API_KEY: ${{ inputs.find2-api-key }}
-        REVIEW_REFUTE_PROVIDER: ${{ inputs.refute-api-key != '' && inputs.refute-provider || '' }}
-        REVIEW_REFUTE_MODEL: ${{ inputs.refute-api-key != '' && inputs.refute-model || '' }}
+        REVIEW_FIND2_EXEC_COMMAND: ${{ inputs.find2-exec-command }}
+        REVIEW_REFUTE_PROVIDER: ${{ (inputs.refute-api-key != '' || inputs.refute-exec-command != '') && inputs.refute-provider || '' }}
+        REVIEW_REFUTE_MODEL: ${{ (inputs.refute-api-key != '' || inputs.refute-exec-command != '') && inputs.refute-model || '' }}
         REVIEW_REFUTE_API_KEY: ${{ inputs.refute-api-key }}
+        REVIEW_REFUTE_EXEC_COMMAND: ${{ inputs.refute-exec-command }}
+        LINEAR_API_KEY: ${{ inputs.linear-api-key }}
+        LINEAR_TEAM_ID: ${{ inputs.linear-team-id }}
       run: |
         args=(--pr "${{ inputs.pr }}")
+        if [[ "${REVIEW_PROVIDER,,}" == "exec" && "$REVIEW_EXEC_COMMAND" == "grok" ]]; then
+          export REVIEW_EXEC_COMMAND="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${{ github.action_path }}\\bin\\grok-stdin.ps1\""
+        fi
         [[ "${{ inputs.post }}" == "true" ]] && args+=(--post)
         [[ -n "${{ inputs.gate }}" ]] && args+=(--gate "${{ inputs.gate }}")
         [[ -n "${{ inputs.conventions }}" ]] && args+=(--conventions "${{ inputs.conventions }}")
+        [[ "${{ inputs.linear-follow-ups }}" == "true" ]] && args+=(--linear-follow-ups)
         node "${{ github.action_path }}/bin/review-pr.ts" "${args[@]}"

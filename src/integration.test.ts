@@ -11,6 +11,7 @@
  */
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
+import { resolve } from "node:path";
 import { after, before, describe, it } from "node:test";
 
 import { requestCompletion, type ResolvedReviewProvider } from "./provider.ts";
@@ -119,7 +120,7 @@ describe("pipeline against a streaming provider", () => {
     assert.equal(result.usage.cachedInputTokens, 300);
   });
 
-  it("sets aside low-severity candidates without spending panel votes", async () => {
+  it("verifies low-severity candidates through the panel", async () => {
     reset();
     behaviour.findResponse = JSON.stringify({
       findings: [
@@ -129,11 +130,11 @@ describe("pipeline against a streaming provider", () => {
     });
     const result = await reviewDiff({ diff: "x", conventions: null, provider });
 
-    // 1 find + 2 votes for the high; the low was set aside unverified.
-    assert.equal(behaviour.requestCount, 3);
+    // 1 find + 2 votes per candidate; lows retain the same verification bar.
+    assert.equal(behaviour.requestCount, 5);
     assert.deepEqual(
       result.findings.map((finding) => finding.title),
-      ["Data loss on close"],
+      ["Data loss on close", "Doc comment stale"],
     );
   });
 
@@ -169,6 +170,24 @@ describe("pipeline against a streaming provider", () => {
     assert.equal(result.findings.length, 1);
   });
 
+  it("gives every panel vote the full changed-file context", async () => {
+    reset();
+    behaviour.findResponse = JSON.stringify({
+      findings: [{ file: "a.ts", line: 1, title: "Needs context", detail: "d" }],
+    });
+    behaviour.refuteResponse = (body) => {
+      assert.match(body, /UNRELATED FILE SENTINEL/);
+      return '{"refuted":false,"reason":"stands"}';
+    };
+    const result = await reviewDiff({
+      diff: "x",
+      conventions: null,
+      provider,
+      panelContext: "--- a.ts ---\na\n--- unrelated.ts ---\nUNRELATED FILE SENTINEL",
+    });
+    assert.equal(result.findings.length, 1);
+  });
+
   it("retries a 429 and then succeeds", async () => {
     reset();
     let failures = 1;
@@ -199,5 +218,42 @@ describe("pipeline against a streaming provider", () => {
     assert.notEqual(result.generationError, null);
     assert.match(result.generationError ?? "", /400/);
     assert.deepEqual(result.findings, []);
+  });
+});
+
+describe("exec provider against a real child process", () => {
+  it("writes both prompts to stdin and reads stdout as the completion", async () => {
+    const result = await requestCompletion({
+      provider: {
+        command: `"${process.execPath}" "${resolve("fixtures/fake-cli.mjs")}"`,
+        model: "fake-cli",
+      },
+      systemPrompt: "SYSTEM SENTINEL",
+      userPrompt: "USER SENTINEL",
+      temperature: 0,
+    });
+
+    assert.equal(result.content, '{"findings":[]}');
+    assert.deepEqual(result.usage, {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reported: false,
+    });
+  });
+
+  it("rejects a successful CLI that emits no completion", async () => {
+    await assert.rejects(
+      requestCompletion({
+        provider: {
+          command: `"${process.execPath}" "${resolve("fixtures/fake-cli.mjs")}" --empty`,
+          model: "fake-cli",
+        },
+        systemPrompt: "SYSTEM SENTINEL",
+        userPrompt: "USER SENTINEL",
+        temperature: 0,
+      }),
+      /produced no completion/,
+    );
   });
 });
