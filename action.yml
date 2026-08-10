@@ -122,7 +122,7 @@ runs:
       run: |
         args=(--pr "${{ inputs.pr }}")
         if [[ "${REVIEW_PROVIDER,,}" == "exec" && "$REVIEW_EXEC_COMMAND" == "grok" ]]; then
-          export REVIEW_EXEC_COMMAND="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${{ github.action_path }}\\bin\\grok-stdin.ps1\""
+          export REVIEW_EXEC_COMMAND="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${{ github.action_path }}\\bin\\grok-stdin.ps1\""
         fi
         [[ "${{ inputs.post }}" == "true" ]] && args+=(--post)
         [[ -n "${{ inputs.gate }}" ]] && args+=(--gate "${{ inputs.gate }}")
