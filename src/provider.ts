@@ -34,6 +34,29 @@ import { spawn } from "node:child_process";
  * arriving. The total cap only exists to stop an infinite trickle.
  */
 const COMPLETION_IDLE_TIMEOUT_MS = 120_000;
+
+/**
+ * Exec providers get their own, much larger idle budget.
+ *
+ * The HTTP timeout assumes a streaming endpoint: tokens arrive continuously,
+ * so two minutes of silence means the connection died. An agentic CLI behaves
+ * nothing like that — it reads files, reasons, and prints one buffered result
+ * at the end. Measured against the Grok CLI: 126s on a trivial docs diff and
+ * longer on real code, with zero stdout until it finishes. Under the HTTP
+ * budget every substantive review timed out three times and then gave up,
+ * costing ten minutes per run and contributing no findings, while trivial
+ * diffs squeaked in under the wire and looked like success.
+ *
+ * Override with REVIEW_EXEC_IDLE_TIMEOUT_MS when a slower agent needs more.
+ */
+const EXEC_IDLE_TIMEOUT_MS = 900_000;
+
+function execIdleTimeoutMs(env: Readonly<Record<string, string | undefined>>): number {
+  const raw = env.REVIEW_EXEC_IDLE_TIMEOUT_MS?.trim();
+  if (!raw) return EXEC_IDLE_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : EXEC_IDLE_TIMEOUT_MS;
+}
 const COMPLETION_TOTAL_TIMEOUT_MS = 900_000;
 
 export interface ReviewProviderPreset {
@@ -590,6 +613,7 @@ async function requestCompletionOnce(input: CompletionRequest): Promise<Completi
 /** Run a subscription-authenticated CLI with the complete prompt on stdin. */
 async function requestExecCompletionOnce(input: CompletionRequest): Promise<CompletionResult> {
   if (!("command" in input.provider)) throw new ProviderRequestError("exec provider was not resolved");
+  const execIdleMs = execIdleTimeoutMs(process.env);
   const command = input.provider.command;
 
   return new Promise<CompletionResult>((resolve, reject) => {
@@ -622,13 +646,13 @@ async function requestExecCompletionOnce(input: CompletionRequest): Promise<Comp
     const failStalled = () => {
       terminate();
       finish(() =>
-        reject(new RetryableProviderError(`CLI produced no stdout for ${COMPLETION_IDLE_TIMEOUT_MS}ms`)),
+        reject(new RetryableProviderError(`CLI produced no stdout for ${execIdleMs}ms`)),
       );
     };
     const touch = () => {
       if (settled) return;
       clearTimeout(idle);
-      idle = setTimeout(failStalled, COMPLETION_IDLE_TIMEOUT_MS);
+      idle = setTimeout(failStalled, execIdleMs);
     };
     const total = setTimeout(() => {
       terminate();
