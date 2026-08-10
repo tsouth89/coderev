@@ -1763,12 +1763,37 @@ export async function reviewDiff(input: {
 
   const tag = (findings: ReadonlyArray<ReviewFinding>, source: string) =>
     findings.map((finding) => ({ ...finding, source }));
+  // A generator that returns unparseable output is indistinguishable from one
+  // that found nothing: both yield an empty list at exit code 0. That
+  // ambiguity hid a broken Grok integration for two days — every run read
+  // "(0 + N)" and looked like a quiet model rather than a dead one. Whenever
+  // a non-empty completion parses to zero findings, show what actually came
+  // back so the next reader diagnoses instead of guessing.
+  const parseWithDiagnostic = (
+    content: string,
+    model: string,
+  ): ReadonlyArray<ReviewFinding> => {
+    const parsed = parseFindings(content);
+    if (parsed.length === 0) {
+      const trimmed = content.trim();
+      note(
+        trimmed.length === 0
+          ? `  ${model} returned an empty completion.`
+          : `  ${model} returned ${trimmed.length} chars that parsed to no findings; first 300: ${trimmed.slice(0, 300).replace(/\s+/g, " ")}`,
+      );
+    }
+    return parsed;
+  };
+
   const primaryCandidates = primary.ok
-    ? tag(parseFindings(primary.result.content), input.provider.model)
+    ? tag(parseWithDiagnostic(primary.result.content, input.provider.model), input.provider.model)
     : [];
   const secondaryCandidates =
     secondary !== null && secondary.ok && input.find2Provider
-      ? tag(parseFindings(secondary.result.content), input.find2Provider.model)
+      ? tag(
+          parseWithDiagnostic(secondary.result.content, input.find2Provider.model),
+          input.find2Provider.model,
+        )
       : [];
   const candidates = unionCandidates(primaryCandidates, secondaryCandidates).map((candidate) =>
     candidate.line > 0
