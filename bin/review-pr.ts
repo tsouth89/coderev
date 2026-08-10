@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { parse, reportFailure, requireString } from "../src/args.ts";
 import { fetchPullRequestContext } from "../src/context.ts";
 import { buildFileInventory } from "../src/inventory.ts";
+import { fileLinearFollowUps } from "../src/linear.ts";
 import {
   createInlinePullRequestReview,
   fetchExistingReviewComment,
@@ -19,7 +20,6 @@ import {
 import { SEVERITY_ORDER } from "../src/review.ts";
 import { createHash } from "node:crypto";
 import {
-  assessDiffRisk,
   classifyAgainstPrevious,
   dedupeFindings,
   formatReviewComment,
@@ -54,12 +54,16 @@ Flags:
                  medium, or low). Infra/provider failures exit 0 under a gate
                  (fail-open): a blocking check must block on findings, never
                  on outages. Without --gate, behaviour is advisory as before.
+  --linear-follow-ups
+                 Opt in to filing fresh, verified follow-up findings with high
+                 confidence. Requires LINEAR_API_KEY and LINEAR_TEAM_ID.
 
 Environment:
   REVIEW_API_KEY       Model API key. Falls back to the provider's own variable.
-  REVIEW_PROVIDER      deepseek (default), openrouter, openai.
+  REVIEW_PROVIDER      deepseek (default), openrouter, openai, meta, or exec.
   REVIEW_MODEL         Overrides the provider's default model.
   REVIEW_API_BASE_URL  Overrides the base URL for any OpenAI-compatible endpoint.
+  REVIEW_EXEC_COMMAND  Command for exec providers; receives both prompts on stdin.
 
   REVIEW_REFUTE_PROVIDER / REVIEW_REFUTE_MODEL / REVIEW_REFUTE_API_KEY
                        Route the refutation panel to a different provider than
@@ -83,6 +87,7 @@ async function main(): Promise<number> {
       "summary-only": { type: "boolean", default: false },
       gate: { type: "string" },
       force: { type: "boolean", default: false },
+      "linear-follow-ups": { type: "boolean", default: false },
     },
     usage: USAGE,
   });
@@ -179,27 +184,17 @@ async function main(): Promise<number> {
     }
   };
 
-  // Re-passes generate on the flat-priced second model only. Pass one hunts
-  // with both; on pushes the reasoning generator's paid thinking mostly
-  // re-derives what pass memory already carries, while the measured recall
-  // engine (62% of fleet survivors) keeps hunting the delta. The panel must
-  // be pinned explicitly here: reviewDiff defaults it to the generator, and
-  // the sole re-pass generator is the model the panel A/B rejected.
+  // Keep both generators on every pass. This restores the measured diversity
+  // that was previously rationed by token cost.
   const rePass = previous !== null && find2Provider !== undefined;
-  // Spend follows stakes: re-passes on risky diffs regain the precision
-  // generator (its catches cluster exactly there — races, lifecycles,
-  // migrations); calm re-passes keep the flat-priced single generator.
-  const risk = assessDiffRisk(diff);
-  if (risk.signals.length > 0) console.log(`Risk signals: ${risk.signals.join(", ")}`);
-  const singleGen = rePass && !risk.highStakes;
-  const passProvider = singleGen ? (find2Provider as NonNullable<typeof find2Provider>) : provider;
-  const passFind2 = singleGen ? undefined : find2Provider;
-  const panelProvider = refuteProvider ?? (singleGen ? provider : undefined);
+  const passProvider = provider;
+  const passFind2 = find2Provider;
+  const panelProvider = refuteProvider;
   console.log(
     `Reviewing PR ${pr} with ${passProvider.model}` +
       (passFind2 ? ` + ${passFind2.model}` : "") +
       (panelProvider ? ` (panel: ${panelProvider.model})` : "") +
-      (singleGen ? " [re-pass: single generator]" : rePass ? " [re-pass: high-stakes, dual generator]" : "") +
+      (rePass ? " [re-pass: dual generator]" : "") +
       "...",
   );
   const {
@@ -295,16 +290,35 @@ async function main(): Promise<number> {
     `${outcome === "updated" ? "Updated the review comment" : "Posted a review comment"} on PR ${pr} (${findings.length} finding(s)).`,
   );
 
+  const commentable = parseCommentableLines(rawDiff);
+  const { fresh } = classifyAgainstPrevious(dedupeFindings(findings), previous, commentable);
+  if (values["linear-follow-ups"] === true) {
+    const apiKey = process.env.LINEAR_API_KEY?.trim();
+    const teamId = process.env.LINEAR_TEAM_ID?.trim();
+    if (!apiKey || !teamId) {
+      console.warn("Linear follow-up filing enabled but LINEAR_API_KEY or LINEAR_TEAM_ID is missing.");
+    } else {
+      try {
+        const created = await fileLinearFollowUps({ findings: fresh, apiKey, teamId, pr });
+        console.log(`Created ${created} Linear follow-up issue(s).`);
+      } catch (cause) {
+        console.warn(
+          `Linear follow-up filing failed; review stands: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
+    }
+  }
+
   // Inline comments: fresh findings only (a re-posted inline for a finding the
   // author already read is spam with an anchor), validated against the RAW
   // diff since that is what GitHub accepts anchors on. Any failure degrades to
   // the summary that just posted — inline is presentation, not the record.
   if (values["summary-only"] !== true && findings.length > 0) {
-    const commentable = parseCommentableLines(rawDiff);
-    const { fresh } = classifyAgainstPrevious(dedupeFindings(findings), previous, commentable);
-    // Lows never post inline: an anchored comment is a work item no matter
-    // what its label says.
-    const inlineWorthy = fresh.filter((finding) => finding.severity !== "low");
+    // Only fix-now dispositions become inline work items. Follow-ups and
+    // advisories stay in the summary (and follow-ups may be filed explicitly).
+    const inlineWorthy = fresh.filter(
+      (finding) => finding.disposition === "block" || finding.disposition === "fix-if-quick",
+    );
     const { anchored, unanchored } = planInlineComments(inlineWorthy, commentable);
     if (unanchored.length > 0) {
       console.log(`${unanchored.length} finding(s) had no diff anchor; summary only.`);

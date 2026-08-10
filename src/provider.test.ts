@@ -98,6 +98,23 @@ describe("resolveReviewProvider", () => {
     });
     assert.equal(resolved.ok, false);
   });
+
+  it("resolves an exec provider without an API key", () => {
+    const resolved = resolveReviewProvider({
+      REVIEW_PROVIDER: "exec",
+      REVIEW_EXEC_COMMAND: "grok --print",
+      REVIEW_MODEL: "grok",
+    });
+    assert.deepEqual(resolved, {
+      ok: true,
+      provider: { command: "grok --print", model: "grok" },
+    });
+  });
+
+  it("requires a command for the exec provider", () => {
+    const resolved = resolveReviewProvider({ REVIEW_PROVIDER: "exec" });
+    assert.equal(resolved.ok, false);
+  });
 });
 
 describe("resolveRefuteProvider", () => {
@@ -140,6 +157,19 @@ describe("resolveRefuteProvider", () => {
       REVIEW_REFUTE_PROVIDER: "deepseek",
     });
     assert.equal(resolved?.ok && resolved.provider.baseUrl, "https://api.deepseek.com/v1");
+  });
+
+  it("supports an exec overlay with its own command", () => {
+    const resolved = resolveRefuteProvider({
+      REVIEW_PROVIDER: "exec",
+      REVIEW_EXEC_COMMAND: "grok --print",
+      REVIEW_REFUTE_PROVIDER: "exec",
+      REVIEW_REFUTE_EXEC_COMMAND: "grok --print --mode fast",
+    });
+    assert.deepEqual(resolved, {
+      ok: true,
+      provider: { command: "grok --print --mode fast", model: "exec" },
+    });
   });
 });
 

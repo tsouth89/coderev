@@ -1,11 +1,12 @@
+import { spawn } from "node:child_process";
+
 /**
  * The model endpoint the reviewer talks to.
  *
- * Deliberately the smallest surface that still lets the provider change without
- * touching review logic: an OpenAI-compatible `POST /chat/completions` plus a
- * bearer token. DeepSeek, OpenRouter, Together, Groq, and a local llama.cpp
- * server all speak that shape, so swapping providers is environment variables
- * rather than a code change.
+ * HTTP providers use an OpenAI-compatible `POST /chat/completions` plus a
+ * bearer token. Exec providers instead run a command with the prompt on stdin,
+ * which lets a locally authenticated subscription CLI drive the same review
+ * machinery without pretending it is an HTTP endpoint.
  *
  * Anthropic-compatible gateways want `/v1/messages` with a different body and a
  * different auth header. That is a second client, not a preset, and it is not
@@ -82,11 +83,22 @@ export const REVIEW_PROVIDER_PRESETS: Readonly<Record<string, ReviewProviderPres
 
 export const DEFAULT_REVIEW_PROVIDER = "deepseek";
 
-export interface ResolvedReviewProvider {
+export interface ResolvedHttpReviewProvider {
   readonly baseUrl: string;
   readonly model: string;
   readonly apiKey: string;
+  readonly command?: never;
 }
+
+export interface ResolvedExecReviewProvider {
+  readonly command: string;
+  /** Display/audit label. Exec providers do not send this value to the CLI. */
+  readonly model: string;
+  readonly baseUrl?: never;
+  readonly apiKey?: never;
+}
+
+export type ResolvedReviewProvider = ResolvedHttpReviewProvider | ResolvedExecReviewProvider;
 
 /**
  * Plain data rather than a thrown error, so the resolver stays a pure function
@@ -109,6 +121,17 @@ export function resolveReviewProvider(
 ): ReviewProviderResolution {
   const providerName = (env.REVIEW_PROVIDER ?? DEFAULT_REVIEW_PROVIDER).trim().toLowerCase();
   const preset = REVIEW_PROVIDER_PRESETS[providerName];
+
+  if (providerName === "exec") {
+    const command = env.REVIEW_EXEC_COMMAND?.trim();
+    if (!command) {
+      return { ok: false, reason: "REVIEW_EXEC_COMMAND must be set when REVIEW_PROVIDER is exec." };
+    }
+    return {
+      ok: true,
+      provider: { command, model: env.REVIEW_MODEL?.trim() || "exec" },
+    };
+  }
 
   const baseUrl = env.REVIEW_API_BASE_URL?.trim() || preset?.baseUrl;
   if (!baseUrl) {
@@ -163,7 +186,8 @@ function resolveSecondaryProvider(
   const anySet =
     env[`${prefix}_PROVIDER`]?.trim() ||
     env[`${prefix}_MODEL`]?.trim() ||
-    env[`${prefix}_API_BASE_URL`]?.trim();
+    env[`${prefix}_API_BASE_URL`]?.trim() ||
+    env[`${prefix}_EXEC_COMMAND`]?.trim();
   if (!anySet) return null;
 
   const overlay: Record<string, string | undefined> = { ...env };
@@ -171,6 +195,7 @@ function resolveSecondaryProvider(
   overlay.REVIEW_MODEL = env[`${prefix}_MODEL`];
   overlay.REVIEW_API_BASE_URL = env[`${prefix}_API_BASE_URL`];
   overlay.REVIEW_API_KEY = env[`${prefix}_API_KEY`] ?? env.REVIEW_API_KEY;
+  overlay.REVIEW_EXEC_COMMAND = env[`${prefix}_EXEC_COMMAND`] ?? env.REVIEW_EXEC_COMMAND;
   return resolveReviewProvider(overlay);
 }
 
@@ -484,6 +509,8 @@ export async function requestCompletion(input: CompletionRequest): Promise<Compl
 }
 
 async function requestCompletionOnce(input: CompletionRequest): Promise<CompletionResult> {
+  if ("command" in input.provider) return requestExecCompletionOnce(input);
+
   const controller = new AbortController();
   const total = setTimeout(() => controller.abort(), COMPLETION_TOTAL_TIMEOUT_MS);
   let idle: NodeJS.Timeout | undefined;
@@ -549,10 +576,103 @@ async function requestCompletionOnce(input: CompletionRequest): Promise<Completi
       );
     }
     applyStreamLine(buffered, state);
+    if (state.content.trim().length === 0) {
+      throw new ProviderRequestError("response contained no completion");
+    }
 
     return { content: state.content, usage: state.usage };
   } finally {
     clearTimeout(total);
     clearTimeout(idle);
   }
+}
+
+/** Run a subscription-authenticated CLI with the complete prompt on stdin. */
+async function requestExecCompletionOnce(input: CompletionRequest): Promise<CompletionResult> {
+  if (!("command" in input.provider)) throw new ProviderRequestError("exec provider was not resolved");
+  const command = input.provider.command;
+
+  return new Promise<CompletionResult>((resolve, reject) => {
+    const child = spawn(command, {
+      shell: true,
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let idle: NodeJS.Timeout | undefined;
+    const terminate = () => {
+      if (process.platform === "win32" && child.pid !== undefined) {
+        spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+          stdio: "ignore",
+          windowsHide: true,
+        }).unref();
+      } else {
+        child.kill("SIGKILL");
+      }
+    };
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(idle);
+      clearTimeout(total);
+      callback();
+    };
+    const failStalled = () => {
+      terminate();
+      finish(() =>
+        reject(new RetryableProviderError(`CLI produced no stdout for ${COMPLETION_IDLE_TIMEOUT_MS}ms`)),
+      );
+    };
+    const touch = () => {
+      if (settled) return;
+      clearTimeout(idle);
+      idle = setTimeout(failStalled, COMPLETION_IDLE_TIMEOUT_MS);
+    };
+    const total = setTimeout(() => {
+      terminate();
+      finish(() =>
+        reject(new RetryableProviderError(`CLI exceeded ${COMPLETION_TOTAL_TIMEOUT_MS}ms`)),
+      );
+    }, COMPLETION_TOTAL_TIMEOUT_MS);
+
+    touch();
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      touch();
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      // Bound diagnostics so a noisy failed CLI cannot inflate the action log/error.
+      if (stderr.length < 4_000) stderr += chunk;
+    });
+    child.on("error", (cause) => {
+      finish(() => reject(new RetryableProviderError(`CLI failed to start: ${cause.message}`)));
+    });
+    child.on("close", (code, signal) => {
+      finish(() => {
+        if (code !== 0) {
+          const detail = stderr.trim().slice(0, 300);
+          reject(
+            new ProviderRequestError(
+              `CLI exited with ${signal ? `signal ${signal}` : `code ${String(code)}`}${detail ? `: ${detail}` : ""}`,
+            ),
+          );
+          return;
+        }
+        const content = stdout.trim();
+        if (content.length === 0) {
+          reject(new ProviderRequestError("CLI exited successfully but produced no completion"));
+          return;
+        }
+        resolve({ content, usage: EMPTY_USAGE });
+      });
+    });
+    child.stdin.on("error", (cause) => {
+      finish(() => reject(new RetryableProviderError(`CLI stdin failed: ${cause.message}`)));
+    });
+    child.stdin.end(`${input.systemPrompt}\n\n${input.userPrompt}`);
+  });
 }

@@ -33,7 +33,7 @@ caching, since every vote re-sends the same diff.
 name: PR review
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, ready_for_review, labeled]
 
 permissions:
   contents: read
@@ -79,18 +79,46 @@ variables, never a code change.
 | Variable | Purpose |
 | --- | --- |
 | `REVIEW_API_KEY` | Model key. Falls back to the provider's own variable (`DEEPSEEK_API_KEY`, etc). |
-| `REVIEW_PROVIDER` | `deepseek` (default), `openrouter`, `openai`, `meta`. |
+| `REVIEW_PROVIDER` | `deepseek` (default), `openrouter`, `openai`, `meta`, `exec`. |
 | `REVIEW_MODEL` | Overrides the provider's default model. |
 | `REVIEW_API_BASE_URL` | Any other compatible endpoint, including a local server. |
+| `REVIEW_EXEC_COMMAND` | Command used by the `exec` provider. |
 
-DeepSeek V4 Pro is the default: it is the cheapest capable reviewer at time of
-writing, and it bills per token. That last part matters more than it sounds.
+DeepSeek V4 Flash is currently the default during its viability trial, and it
+bills per token. That last part matters more than it sounds.
 Subscription-backed coding CLIs generally cannot authenticate
 non-interactively, which rules them out for CI whatever their token value.
 
-Anthropic-compatible gateways (`/v1/messages`) are not supported. That is a
-second client rather than a preset, and it is not built until something needs
-it.
+Anthropic-compatible HTTP gateways (`/v1/messages`) are not supported. That is
+a second HTTP client rather than a preset.
+
+### Subscription CLI provider
+
+On a self-hosted runner with an already authenticated CLI, CodeRev can write
+the complete system and user prompts to stdin and read stdout as the model
+completion:
+
+```yaml
+- uses: tsouth89/coderev@v1
+  with:
+    provider: exec
+    exec-command: grok
+```
+
+The action's `grok` shorthand uses its bundled trusted wrapper to pass large
+prompts through a temporary file. CLI token usage is intentionally reported as unknown. Confirm that the
+subscription terms permit automated pipeline use before enabling this. The
+same transport works for stage overlays through `find2-provider: exec` /
+`find2-exec-command` and `refute-provider: exec` /
+`refute-exec-command`.
+
+### Optional Linear follow-ups
+
+Automatic filing is off by default. A repo may opt in with
+`linear-follow-ups: true`, `linear-api-key`, and `linear-team-id`. CodeRev only
+files fresh findings that survived the verification panel and carry both
+`disposition: follow-up` and `confidence: high`; everything else remains in
+the review comment.
 
 ## Benchmarking
 
