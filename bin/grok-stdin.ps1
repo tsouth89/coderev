@@ -10,7 +10,9 @@ $promptPath = Join-Path ([IO.Path]::GetTempPath()) ("coderev-grok-{0}.txt" -f [g
 $exitCode = 1
 try {
     [IO.File]::WriteAllText($promptPath, $promptText, [Text.UTF8Encoding]::new($false))
-    & grok --prompt-file $promptPath --output-format plain --max-turns 1 --tools none --permission-mode dontAsk --disable-web-search --no-subagents --no-memory --verbatim
+    # --prompt-file is already single-turn. The current CLI exits 1 with
+    # "Max turns reached" when that mode is also capped at --max-turns 1.
+    & grok --prompt-file $promptPath --output-format plain --tools none --permission-mode dontAsk --disable-web-search --no-subagents --no-memory --verbatim
     $exitCode = $LASTEXITCODE
 } catch {
     Write-Error $_

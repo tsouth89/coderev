@@ -16,16 +16,20 @@ describe("Grok action wrapper invariants", () => {
     );
   });
 
-  it("keeps Grok single-turn and unable to execute tools", () => {
+  it("keeps Grok prompt-file mode unable to execute tools without a conflicting turn cap", () => {
     const wrapper = readFileSync(resolve(repoRoot, "bin", "grok-stdin.ps1"), "utf8");
+    const invocation = wrapper
+      .split(/\r?\n/)
+      .find((line) => line.trimStart().startsWith("& grok "));
 
-    assert.match(wrapper, /--prompt-file \$promptPath/);
-    assert.match(wrapper, /--max-turns 1/);
-    assert.match(wrapper, /--tools none/);
-    assert.match(wrapper, /--permission-mode dontAsk/);
-    assert.match(wrapper, /--disable-web-search/);
-    assert.match(wrapper, /--no-subagents/);
-    assert.match(wrapper, /--no-memory/);
-    assert.match(wrapper, /--verbatim/);
+    assert.ok(invocation, "the wrapper must invoke Grok");
+    assert.match(invocation, /--prompt-file \$promptPath/);
+    assert.doesNotMatch(invocation, /--max-turns/);
+    assert.match(invocation, /--tools none/);
+    assert.match(invocation, /--permission-mode dontAsk/);
+    assert.match(invocation, /--disable-web-search/);
+    assert.match(invocation, /--no-subagents/);
+    assert.match(invocation, /--no-memory/);
+    assert.match(invocation, /--verbatim/);
   });
 });
