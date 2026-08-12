@@ -16,17 +16,32 @@ describe("Grok action wrapper invariants", () => {
     );
   });
 
-  it("keeps Grok prompt-file mode unable to execute tools without a conflicting turn cap", () => {
+  it("keeps Grok able to inspect the repo, with room to finish", () => {
+    // This invariant was originally inverted: it asserted --tools none,
+    // --permission-mode dontAsk, and the absence of --max-turns. Those are
+    // the exact flags that made Grok contribute nothing for two days.
+    // Measured against the real CLI: dontAsk DENIES tool calls rather than
+    // auto-approving them, so the agent emitted a planning preamble, asked to
+    // read a file, was refused, and ended with stopReason "cancelled" at exit
+    // code 0 — indistinguishable from a clean review. Grok is an agentic
+    // reviewer; reading the surrounding code is the whole point of using it.
     const wrapper = readFileSync(resolve(repoRoot, "bin", "grok-stdin.ps1"), "utf8");
     const invocation = wrapper
       .split(/\r?\n/)
-      .find((line) => line.trimStart().startsWith("& grok "));
+      .filter((line) => line.trimStart().startsWith("& grok ") || line.trimStart().startsWith("--"))
+      .join(" ");
 
     assert.ok(invocation, "the wrapper must invoke Grok");
     assert.match(invocation, /--prompt-file \$promptPath/);
-    assert.doesNotMatch(invocation, /--max-turns/);
-    assert.match(invocation, /--tools none/);
-    assert.match(invocation, /--permission-mode dontAsk/);
+    // Tools stay enabled and auto-approved, and neither disabling flag returns.
+    assert.match(invocation, /--always-approve/);
+    assert.doesNotMatch(invocation, /--tools none/);
+    assert.doesNotMatch(invocation, /--permission-mode dontAsk/);
+    // A turn budget is required, and small budgets starve the inspection:
+    // nine of twenty-five fleet runs died at "Max turns reached" with 20.
+    const turns = invocation.match(/--max-turns (\d+)/);
+    assert.ok(turns, "the wrapper must set a turn budget");
+    assert.ok(Number(turns[1]) >= 60, `turn budget too small: ${turns[1]}`);
     assert.match(invocation, /--disable-web-search/);
     assert.match(invocation, /--no-subagents/);
     assert.match(invocation, /--no-memory/);
