@@ -48,7 +48,7 @@ describe("Grok action wrapper invariants", () => {
     // still comes from the panel, not from the generator's own helpers.
     assert.doesNotMatch(invocation, /--no-subagents/);
     // The model is pinned so the reviewer cannot change under us on a release.
-    assert.match(invocation, /--model \/);
+    assert.match(invocation, /--model \$model/);
     assert.match(invocation, /--no-memory/);
     assert.match(invocation, /--verbatim/);
   });
