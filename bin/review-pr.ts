@@ -24,8 +24,10 @@ import {
   dedupeFindings,
   formatReviewComment,
   parseCommentableLines,
+  maxRoundsForDiff,
   parseDroppedFindings,
   parsePreviousState,
+  parseRound,
   parseStoredDiffHash,
   planInlineComments,
   reviewDiff,
@@ -159,6 +161,21 @@ async function main(): Promise<number> {
   });
   const previous = previousBody === null ? null : parsePreviousState(previousBody);
   const previousDropped = previousBody === null ? null : parseDroppedFindings(previousBody);
+
+  // Bounded follow-up: the initial review plus one more pass, or up to four on
+  // a large diff. Pushes stopped triggering reviews entirely after an
+  // unbounded loop cost a working day; this restores the follow-up that
+  // catches fix-introduced bugs without restoring the treadmill. --force and
+  // the coderev label still override, because a human asking is not a loop.
+  const round = (previousBody === null ? 0 : parseRound(previousBody)) + 1;
+  const maxRounds = maxRoundsForDiff(diff);
+  if (values.force !== true && round > maxRounds) {
+    console.log(
+      `Round ${round} exceeds the ${maxRounds}-round budget for this pull request; skipping (use --force or the coderev label to override).`,
+    );
+    return 0;
+  }
+  console.log(`Review round ${round} of ${maxRounds}.`);
   if (
     values.force !== true &&
     previousBody !== null &&
@@ -260,6 +277,7 @@ async function main(): Promise<number> {
     truncated,
     previous,
     diffHash,
+    round,
     changedLines: parseCommentableLines(rawDiff),
     // This pass's drops plus the carried older ones, newest first; embedState
     // bounds the stored list.
