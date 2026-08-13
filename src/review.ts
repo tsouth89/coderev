@@ -634,10 +634,54 @@ export interface PreviousFinding {
 /** Refuted candidates carried in state, bounded so the block stays small. */
 export const MAX_STORED_DROPPED = 20;
 
+/**
+ * Rounds a pull request gets before the reviewer goes quiet.
+ *
+ * Reviewing every push turned agents into a fix-review treadmill that cost a
+ * full working day, so pushes stopped triggering reviews entirely. A bounded
+ * count restores the follow-up pass that catches fix-introduced bugs — the
+ * measured value of mid-PR review — without the treadmill. Large diffs get
+ * more rounds because they genuinely iterate more.
+ */
+export const DEFAULT_MAX_ROUNDS = 2;
+export const LARGE_DIFF_MAX_ROUNDS = 4;
+export const LARGE_DIFF_CHANGED_LINES = 1000;
+
+/** Changed lines in a unified diff, for sizing the round budget. */
+export function countChangedLines(diff: string): number {
+  let count = 0;
+  for (const line of diff.split(/\r?\n/)) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+") || line.startsWith("-")) count += 1;
+  }
+  return count;
+}
+
+export function maxRoundsForDiff(diff: string): number {
+  return countChangedLines(diff) >= LARGE_DIFF_CHANGED_LINES
+    ? LARGE_DIFF_MAX_ROUNDS
+    : DEFAULT_MAX_ROUNDS;
+}
+
+/** Rounds already spent on this pull request, from the embedded state. */
+export function parseRound(body: string): number {
+  const match = body.match(STATE_PATTERN);
+  if (!match?.[1]) return 0;
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(match[1], "base64").toString("utf8"));
+    if (typeof parsed !== "object" || parsed === null) return 0;
+    const round = (parsed as Record<string, unknown>).round;
+    return typeof round === "number" && Number.isFinite(round) && round > 0 ? round : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export function embedState(
   findings: ReadonlyArray<PreviousFinding>,
   diffHash?: string | null,
   dropped?: ReadonlyArray<PreviousFinding>,
+  round?: number,
 ): string {
   const strip = ({ file, line, title, severity, confidence, disposition }: PreviousFinding) => ({
     file,
@@ -652,6 +696,7 @@ export function embedState(
   if (dropped && dropped.length > 0) {
     payload.dropped = dropped.slice(0, MAX_STORED_DROPPED).map(strip);
   }
+  if (round && round > 0) payload.round = round;
   const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
   return `<!-- coderev:state:v1 ${encoded} -->`;
 }
@@ -1172,6 +1217,8 @@ export function formatReviewComment(input: {
   readonly diffHash?: string | null;
   /** This pass's refuted candidates, carried in state so drops stay dropped. */
   readonly droppedThisPass?: ReadonlyArray<PreviousFinding> | null;
+  /** Which round this pass is, stored so the next push can stop at the cap. */
+  readonly round?: number;
   /** Head-side changed lines of the reviewed diff, for evidence-based resolution. */
   readonly changedLines?: ReadonlyMap<string, ReadonlySet<number>> | null;
 }): string {
@@ -1314,6 +1361,7 @@ export function formatReviewComment(input: {
       ],
       input.diffHash ?? null,
       input.droppedThisPass ?? undefined,
+      input.round,
     ),
   );
   return lines.join("\n");
@@ -1560,6 +1608,95 @@ ${input.lens}`,
  * approach 100%. Paying one extra sequential round to make the remaining votes
  * cache hits is a large net win, because uncached input dominates the bill.
  */
+/**
+ * One prompt carrying every candidate, for panels that bill by the call.
+ *
+ * An agentic CLI costs minutes per invocation, not milliseconds, so the
+ * per-finding panel (three seats times N findings) turns a five-finding
+ * review into an hour. Batching asks one seat to judge every candidate in a
+ * single pass: three calls total, each ground still gets a dedicated seat,
+ * and majority rule is unchanged.
+ *
+ * The cost is per-finding isolation. One context now holds every claim, so a
+ * strong finding can colour a weak neighbour. That is a real loss, accepted
+ * deliberately: the alternatives were a panel model measured to over-refute
+ * (0 of 11 kept, killing confirmed-real findings) or no panel at all.
+ */
+export function buildBatchRefutePrompt(input: {
+  readonly candidates: ReadonlyArray<ReviewFinding>;
+  readonly diff: string;
+  readonly context?: string | null;
+  readonly inventory?: string | null;
+  readonly anchorSnippets?: ReadonlyArray<string | null>;
+}): string {
+  const claims = input.candidates.map((finding, index) => {
+    const snippet = input.anchorSnippets?.[index];
+    return [
+      `### Claim ${index + 1}`,
+      `File: ${finding.file}${finding.line > 0 ? `:${finding.line}` : ""}`,
+      `Title: ${finding.title}`,
+      finding.detail.length > 0 ? `Detail: ${finding.detail}` : "",
+      snippet ? `\n${snippet}` : "",
+    ]
+      .filter((line) => line.length > 0)
+      .join("\n");
+  });
+
+  return [
+    "The diff under review:",
+    "```diff",
+    input.diff,
+    "```",
+    ...(input.context
+      ? [
+          "",
+          "Full contents of the changed files, for verifying claims about them:",
+          "",
+          input.context,
+        ]
+      : []),
+    ...(input.inventory ? ["", input.inventory] : []),
+    "",
+    `Below are ${input.candidates.length} claimed findings. Judge EVERY claim`,
+    "independently of the others: a strong claim is no evidence for a weak one,",
+    "and a weak claim is no evidence against a strong one.",
+    "",
+    ...claims,
+    "",
+    'Respond with JSON only: {"verdicts":[{"claim":1,"refuted":true,"reason":"why"}]}',
+    "Include exactly one entry per claim, using the claim numbers above.",
+  ].join("\n");
+}
+
+/**
+ * Verdicts for a batch, indexed by claim number.
+ *
+ * A claim the panel never returned counts as refuted, matching the single
+ * verdict parser: silence has never been allowed to promote a finding that
+ * nobody vouched for.
+ */
+export function parseBatchVerdicts(raw: string, count: number): Array<RefutationVerdict> {
+  const verdicts: Array<RefutationVerdict> = Array.from({ length: count }, () => ({
+    refuted: true,
+    reason: "no verdict returned for this claim",
+  }));
+  const parsed = extractJsonObject(raw);
+  if (typeof parsed !== "object" || parsed === null) return verdicts;
+  const list = (parsed as Record<string, unknown>).verdicts;
+  if (!Array.isArray(list)) return verdicts;
+  for (const entry of list) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    const claim = typeof record.claim === "number" ? record.claim : Number(record.claim);
+    if (!Number.isFinite(claim) || claim < 1 || claim > count) continue;
+    verdicts[claim - 1] = {
+      refuted: record.refuted !== false,
+      reason: typeof record.reason === "string" ? record.reason.trim() : "",
+    };
+  }
+  return verdicts;
+}
+
 async function runPanel(input: {
   readonly candidates: ReadonlyArray<ReviewFinding>;
   readonly diff: string;
@@ -1580,6 +1717,69 @@ async function runPanel(input: {
     }),
   );
   if (input.candidates.length === 0) return [];
+
+  // Exec providers bill by the call (minutes each), so they judge in batches:
+  // one call per lens covering every candidate. HTTP providers keep the
+  // per-finding path, where isolation is free.
+  if ("command" in input.provider) {
+    const batchPrompt = buildBatchRefutePrompt({
+      candidates: input.candidates,
+      diff: input.diff,
+      context: input.context ?? null,
+      inventory: input.inventory ?? null,
+      anchorSnippets: input.anchorSnippets ?? [],
+    });
+    const seatResults = await Promise.all(
+      REFUTE_LENSES.map(async (lens, seat) => {
+        try {
+          const result = await requestCompletion({
+            provider: input.provider,
+            systemPrompt: REFUTE_SYSTEM_PROMPT,
+            userPrompt: `${batchPrompt}\n\n${lens}`,
+            temperature: REFUTE_TEMPERATURE,
+            onRetry: (message) => input.onProgress(`  retry: ${message}`),
+          });
+          return {
+            verdicts: parseBatchVerdicts(result.content, input.candidates.length),
+            usage: result.usage,
+          };
+        } catch (cause) {
+          // A dead seat must not clear findings: its verdicts count as
+          // refusals to vouch, exactly as an unreadable single vote does.
+          input.onProgress(
+            `  panel seat ${seat + 1} failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          );
+          return {
+            verdicts: Array.from({ length: input.candidates.length }, () => ({
+              refuted: true,
+              reason: "panel seat failed",
+            })),
+            usage: { ...EMPTY_USAGE, reported: true } as TokenUsage,
+          };
+        }
+      }),
+    );
+
+    const batchSeed: TokenUsage = { ...EMPTY_USAGE, reported: true };
+    const panelUsage = seatResults.reduce<TokenUsage>(
+      (total, seat) => addUsage(total, seat.usage),
+      batchSeed,
+    );
+    return input.candidates.map((finding, findingIndex) => {
+      const verdicts = seatResults.map(
+        (seat) => seat.verdicts[findingIndex] ?? { refuted: true, reason: "missing verdict" },
+      );
+      return {
+        finding,
+        survived: survivesPanel(verdicts),
+        verdicts,
+        // Batched panels bill once per seat, not once per finding; attribute
+        // the whole cost to the first finding rather than inventing a split.
+        usage:
+          findingIndex === 0 ? panelUsage : ({ ...EMPTY_USAGE, reported: true } as TokenUsage),
+      };
+    });
+  }
 
   const cast = (findingIndex: number, seat: number) =>
     castVote({
