@@ -7,8 +7,14 @@ import {
   extractJsonObject,
   FIND_SYSTEM_PROMPT,
   formatReviewComment,
+  countChangedLines,
+  DEFAULT_MAX_ROUNDS,
+  LARGE_DIFF_MAX_ROUNDS,
   LENS_JURISDICTION_NOTE,
+  maxRoundsForDiff,
+  parseBatchVerdicts,
   parseDroppedFindings,
+  parseRound,
   parseFindings,
   parsePreviousState,
   parseStoredDiffHash,
@@ -160,6 +166,66 @@ describe("REFUTE_LENSES seat order", () => {
     assert.match(REFUTE_LENSES[0] ?? "", /MECHANISM ACCURACY/);
     assert.match(REFUTE_LENSES[1] ?? "", /SCOPE AND INTENT/);
     assert.match(REFUTE_LENSES[2] ?? "", /CHECKABILITY/);
+  });
+});
+
+describe("parseBatchVerdicts", () => {
+  it("maps verdicts onto their claim numbers", () => {
+    const parsed = parseBatchVerdicts(
+      '{"verdicts":[{"claim":2,"refuted":false,"reason":"traced and confirmed"},{"claim":1,"refuted":true,"reason":"pre-existing"}]}',
+      2,
+    );
+    assert.deepEqual(parsed[0], { refuted: true, reason: "pre-existing" });
+    assert.deepEqual(parsed[1], { refuted: false, reason: "traced and confirmed" });
+  });
+
+  it("counts a claim the panel skipped as refuted", () => {
+    // Silence must never promote a finding nobody vouched for — the same rule
+    // the single-verdict parser has always enforced.
+    const parsed = parseBatchVerdicts('{"verdicts":[{"claim":1,"refuted":false}]}', 3);
+    assert.equal(parsed[0]?.refuted, false);
+    assert.equal(parsed[1]?.refuted, true);
+    assert.equal(parsed[2]?.refuted, true);
+  });
+
+  it("treats unparseable output as a full refusal to vouch", () => {
+    const parsed = parseBatchVerdicts("the model wrote prose instead", 2);
+    assert.deepEqual(
+      parsed.map((verdict) => verdict.refuted),
+      [true, true],
+    );
+  });
+
+  it("ignores claim numbers outside the batch", () => {
+    const parsed = parseBatchVerdicts('{"verdicts":[{"claim":9,"refuted":false}]}', 1);
+    assert.equal(parsed[0]?.refuted, true);
+  });
+});
+
+describe("round budget", () => {
+  it("gives a normal diff two rounds and a large diff four", () => {
+    const small = ["+++ b/a.ts", "+one", "-two"].join("\n");
+    assert.equal(maxRoundsForDiff(small), DEFAULT_MAX_ROUNDS);
+
+    const big = ["+++ b/a.ts", ...Array.from({ length: 1200 }, (_, i) => `+line ${i}`)].join("\n");
+    assert.equal(maxRoundsForDiff(big), LARGE_DIFF_MAX_ROUNDS);
+  });
+
+  it("does not count file headers as changed lines", () => {
+    assert.equal(countChangedLines(["--- a/x.ts", "+++ b/x.ts", "+real"].join("\n")), 1);
+  });
+
+  it("round-trips the round through the state block", () => {
+    const comment = formatReviewComment({
+      findings: [],
+      model: "m",
+      truncated: false,
+      round: 2,
+    });
+    assert.equal(parseRound(comment), 2);
+    // A comment written before rounds existed reads as zero, so the next pass
+    // is round one rather than being silently capped out.
+    assert.equal(parseRound("<!-- coderev -->\nold comment"), 0);
   });
 });
 
