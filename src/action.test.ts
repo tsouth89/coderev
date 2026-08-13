@@ -43,7 +43,12 @@ describe("Grok action wrapper invariants", () => {
     assert.ok(turns, "the wrapper must set a turn budget");
     assert.ok(Number(turns[1]) >= 60, `turn budget too small: ${turns[1]}`);
     assert.match(invocation, /--disable-web-search/);
-    assert.match(invocation, /--no-subagents/);
+    // Subagents are deliberately allowed: fanning out the inspection is the
+    // same read-the-code capability applied harder. Independence of judgement
+    // still comes from the panel, not from the generator's own helpers.
+    assert.doesNotMatch(invocation, /--no-subagents/);
+    // The model is pinned so the reviewer cannot change under us on a release.
+    assert.match(invocation, /--model \/);
     assert.match(invocation, /--no-memory/);
     assert.match(invocation, /--verbatim/);
   });
