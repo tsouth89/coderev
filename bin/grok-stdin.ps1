@@ -33,11 +33,16 @@ try {
 # "Max turns reached" — the agent spends turns reading files, and a complex
 # diff exhausts a small budget mid-inspection, producing nothing. Turns are
 # not billed individually; an unfinished review is the expensive outcome.
+    # Model is pinned, not inherited. `grok models` reports a default that
+    # moves when a release lands, so an unpinned wrapper silently swaps
+    # reviewer mid-ledger and the logs never say which model judged what.
+    # Override with CODEREV_GROK_MODEL to trial a new release first.
+    $model = if ($env:CODEREV_GROK_MODEL) { $env:CODEREV_GROK_MODEL } else { "grok-4.6" }
     & grok --prompt-file $promptPath `
+        --model $model `
         --output-format plain `
         --always-approve `
         --disable-web-search `
-        --no-subagents `
         --no-memory `
         --max-turns 80 `
         --verbatim
