@@ -37,16 +37,15 @@ try {
     # moves when a release lands, so an unpinned wrapper silently swaps
     # reviewer mid-ledger and the logs never say which model judged what.
     # Override with CODEREV_GROK_MODEL to trial a new release first.
+    # Subagents stay off: enabling them kept the idle timer alive on every
+    # chunk of narration, so runs only ended at the total cap and one held a
+    # runner for forty-seven minutes while five pull requests queued.
     $model = if ($env:CODEREV_GROK_MODEL) { $env:CODEREV_GROK_MODEL } else { "grok-4.6" }
     & grok --prompt-file $promptPath `
         --model $model `
         --output-format plain `
         --always-approve `
         --disable-web-search `
-        # Subagents were enabled and immediately hung the fleet: the extra
-        # chatter kept resetting the idle timer, so runs outlived every
-        # budget and held runners for forty minutes. Depth is not worth an
-        # unbounded review.
         --no-subagents `
         --no-memory `
         --max-turns 80 `
