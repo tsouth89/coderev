@@ -43,6 +43,11 @@ try {
         --output-format plain `
         --always-approve `
         --disable-web-search `
+        # Subagents were enabled and immediately hung the fleet: the extra
+        # chatter kept resetting the idle timer, so runs outlived every
+        # budget and held runners for forty minutes. Depth is not worth an
+        # unbounded review.
+        --no-subagents `
         --no-memory `
         --max-turns 80 `
         --verbatim
