@@ -1579,6 +1579,7 @@ ${input.anchorSnippet}` : ""}
 ${input.lens}`,
       temperature: REFUTE_TEMPERATURE,
       onRetry: (message) => input.onProgress(`  retry: ${message}`),
+      onLog: (line) => input.onProgress(`  ${line}`),
     });
     return {
       findingIndex: input.findingIndex,
@@ -1745,6 +1746,7 @@ async function runPanel(input: {
             userPrompt: `${batchPrompt}\n\n${lens}`,
             temperature: REFUTE_TEMPERATURE,
             onRetry: (message) => input.onProgress(`  retry: ${message}`),
+            onLog: (line) => input.onProgress(`  ${line}`),
           });
           return {
             verdicts: parseBatchVerdicts(result.content, input.candidates.length),
@@ -1924,6 +1926,7 @@ export async function reviewDiff(input: {
       userPrompt: findPrompt,
       temperature: FIND_TEMPERATURE,
       onRetry: (message) => note(`  retry: ${message}`),
+      onLog: (line) => note(`  ${line}`),
     });
 
   // Both generators run concurrently. One failing degrades to single-generator

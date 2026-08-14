@@ -411,6 +411,8 @@ export interface CompletionRequest {
   readonly temperature: number;
   /** Called when a transient failure is about to be retried. */
   readonly onRetry?: (message: string) => void;
+  /** Live progress lines from an exec provider's stderr. */
+  readonly onLog?: (line: string) => void;
 }
 
 /** Read usage out of a response body without trusting its shape. */
@@ -644,6 +646,7 @@ async function requestExecCompletionOnce(input: CompletionRequest): Promise<Comp
     });
     let stdout = "";
     let stderr = "";
+    let stderrLine = "";
     let settled = false;
     let idle: NodeJS.Timeout | undefined;
     const terminate = () => {
@@ -703,6 +706,19 @@ async function requestExecCompletionOnce(input: CompletionRequest): Promise<Comp
       stdout += chunk;
     });
     child.stderr.on("data", (chunk: string) => {
+      // An agentic CLI can work for ten minutes with nothing on stdout, which
+      // is indistinguishable from a hang to anyone watching the job. The
+      // wrapper narrates on stderr; forward whole lines as they arrive so the
+      // log shows what the reviewer is doing rather than nothing at all.
+      if (input.onLog) {
+        stderrLine += chunk;
+        const parts = stderrLine.split(/\r?\n/);
+        stderrLine = parts.pop() ?? "";
+        for (const line of parts) {
+          const trimmed = line.trim();
+          if (trimmed.length > 0) input.onLog(trimmed);
+        }
+      }
       // Bound diagnostics so a noisy failed CLI cannot inflate the action log/error.
       if (stderr.length < 4_000) stderr += chunk;
     });

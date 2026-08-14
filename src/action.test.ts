@@ -51,6 +51,11 @@ describe("Grok action wrapper invariants", () => {
     // The model is pinned so the reviewer cannot change under us on a release.
     assert.match(invocation, /--model \$model/);
     assert.match(invocation, /--no-memory/);
-    assert.match(invocation, /--verbatim/);
+    // Output is streamed, not buffered: plain mode printed nothing until the
+    // agent finished, so a ten-minute review looked exactly like a hang. The
+    // wrapper narrates events on stderr and prints only the final message on
+    // stdout, which is why --verbatim is gone and this flag is required.
+    assert.match(invocation, /--output-format streaming-messages-json/);
+    assert.doesNotMatch(invocation, /--verbatim/);
   });
 });
