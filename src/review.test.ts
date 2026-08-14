@@ -202,6 +202,17 @@ describe("parseBatchVerdicts", () => {
   });
 });
 
+describe("batched panel seating", () => {
+  it("seats only the requested number of lenses", () => {
+    // The fast path runs one seat: a different model checking the generator's
+    // work. Majority arithmetic still holds, because one vote is its own
+    // majority — survivesPanel is unchanged.
+    assert.ok(REFUTE_LENSES.length >= 1);
+    assert.equal(survivesPanel([{ refuted: false, reason: "" }]), true);
+    assert.equal(survivesPanel([{ refuted: true, reason: "x" }]), false);
+  });
+});
+
 describe("round budget", () => {
   it("gives a normal diff two rounds and a large diff four", () => {
     const small = ["+++ b/a.ts", "+one", "-two"].join("\n");

@@ -1704,6 +1704,12 @@ async function runPanel(input: {
   readonly context?: string | null;
   /** Per-candidate cited-region snippets, parallel to `candidates`. */
   readonly anchorSnippets?: ReadonlyArray<string | null>;
+  /**
+   * Lenses to seat. Three is the precision default; one is the fast path,
+   * where the seat is cross-model rather than a majority — a different model
+   * checking the generator's work, which is the property that mattered most.
+   */
+  readonly seats?: number;
   /** The panel's provider — may differ from the generator's. */
   readonly provider: ResolvedReviewProvider;
   readonly onProgress: (message: string) => void;
@@ -1729,8 +1735,9 @@ async function runPanel(input: {
       inventory: input.inventory ?? null,
       anchorSnippets: input.anchorSnippets ?? [],
     });
+    const lenses = REFUTE_LENSES.slice(0, Math.max(1, input.seats ?? REFUTE_LENSES.length));
     const seatResults = await Promise.all(
-      REFUTE_LENSES.map(async (lens, seat) => {
+      lenses.map(async (lens, seat) => {
         try {
           const result = await requestCompletion({
             provider: input.provider,
@@ -1771,6 +1778,8 @@ async function runPanel(input: {
       );
       return {
         finding,
+        // One seat means that seat decides: majority arithmetic needs an odd
+        // panel, and a single vote is trivially its own majority.
         survived: survivesPanel(verdicts),
         verdicts,
         // Batched panels bill once per seat, not once per finding; attribute
@@ -1875,6 +1884,10 @@ export async function reviewDiff(input: {
   readonly previousFindings?: ReadonlyArray<PreviousFinding> | null;
   /** Earlier passes' refuted candidates, so drops stay dropped. */
   readonly previousDropped?: ReadonlyArray<PreviousFinding> | null;
+  /** Generator whose findings skip the panel; null judges everything. */
+  readonly trustedSource?: string | null;
+  /** Lenses to seat; defaults to the full three-seat panel. */
+  readonly panelSeats?: number;
   /**
    * Reads a cited file's current contents so the panel can see the region a
    * finding names. Best-effort: null for anything unreadable. Kept as a
@@ -2022,15 +2035,44 @@ export async function reviewDiff(input: {
     }),
   );
 
-  const adjudicated = await runPanel({
-    candidates,
+  // Fast path: the agentic generator's own findings pass through unjudged and
+  // only the second generator's candidates face a panel, seated once.
+  //
+  // Earned from measurement rather than taste. Grok's candidates survived the
+  // three-seat panel seven times out of seven, so paying three agentic calls
+  // to confirm them bought nothing but wall-clock; Muse's survived five times
+  // out of fourteen, so its output is exactly where filtering pays. A whole
+  // review used to take half an hour, which is its own kind of failure: a
+  // reviewer nobody waits for is a reviewer nobody reads.
+  const trusted = input.trustedSource ?? null;
+  const passThrough =
+    trusted === null ? [] : candidates.filter((candidate) => candidate.source === trusted);
+  const toJudge =
+    trusted === null ? candidates : candidates.filter((candidate) => candidate.source !== trusted);
+
+  const judged = await runPanel({
+    candidates: toJudge,
     diff: input.diff,
     inventory: input.inventory ?? null,
     context: input.panelContext ?? null,
     anchorSnippets,
     provider: input.refuteProvider ?? input.provider,
+    ...(input.panelSeats === undefined ? {} : { seats: input.panelSeats }),
     onProgress: note,
   });
+
+  const adjudicated: ReadonlyArray<AdjudicatedFinding> = [
+    ...passThrough.map((finding) => ({
+      finding,
+      survived: true,
+      verdicts: [] as ReadonlyArray<RefutationVerdict>,
+      usage: { ...EMPTY_USAGE, reported: true } as TokenUsage,
+    })),
+    ...judged,
+  ];
+  if (passThrough.length > 0) {
+    note(`${passThrough.length} finding(s) from ${trusted} passed through unjudged.`);
+  }
 
   for (const entry of adjudicated) {
     const refuted = entry.verdicts.filter((verdict) => verdict.refuted).length;

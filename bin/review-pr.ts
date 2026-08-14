@@ -230,6 +230,12 @@ async function main(): Promise<number> {
     inventory,
     previousFindings: previous,
     previousDropped,
+    // An agentic CLI costs minutes per call, so it judges once and only judges
+    // what it did not write. Three seats over every candidate was a half-hour
+    // review; a reviewer nobody waits for is a reviewer nobody reads.
+    ...("command" in passProvider
+      ? { trustedSource: passProvider.model, panelSeats: 1 }
+      : {}),
     provider: passProvider,
     readCitedFile,
     ...(passFind2 ? { find2Provider: passFind2 } : {}),

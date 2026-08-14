@@ -49,7 +49,7 @@ const COMPLETION_IDLE_TIMEOUT_MS = 120_000;
  *
  * Override with REVIEW_EXEC_IDLE_TIMEOUT_MS when a slower agent needs more.
  */
-const EXEC_IDLE_TIMEOUT_MS = 900_000;
+const EXEC_IDLE_TIMEOUT_MS = 480_000;
 
 /**
  * Hard ceiling on one exec call, independent of whether it is still talking.
