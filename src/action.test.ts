@@ -43,10 +43,11 @@ describe("Grok action wrapper invariants", () => {
     assert.ok(turns, "the wrapper must set a turn budget");
     assert.ok(Number(turns[1]) >= 60, `turn budget too small: ${turns[1]}`);
     assert.match(invocation, /--disable-web-search/);
-    // Subagents are deliberately allowed: fanning out the inspection is the
-    // same read-the-code capability applied harder. Independence of judgement
-    // still comes from the panel, not from the generator's own helpers.
-    assert.doesNotMatch(invocation, /--no-subagents/);
+    // Subagents stay OFF. Enabling them hung the fleet: the extra narration
+    // reset the idle timer on every chunk, so runs could only end at the total
+    // cap, and one held a runner for forty-seven minutes while five pull
+    // requests queued. Depth is not worth an unbounded review.
+    assert.match(invocation, /--no-subagents/);
     // The model is pinned so the reviewer cannot change under us on a release.
     assert.match(invocation, /--model \$model/);
     assert.match(invocation, /--no-memory/);
