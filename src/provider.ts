@@ -47,9 +47,15 @@ const COMPLETION_IDLE_TIMEOUT_MS = 120_000;
  * costing ten minutes per run and contributing no findings, while trivial
  * diffs squeaked in under the wire and looked like success.
  *
+ * Eight minutes was tried and reverted: Grok emits nothing until it finishes,
+ * so this budget is effectively a total one, and the tighter value killed
+ * legitimate reviews mid-inspection. Because the error was retryable, each
+ * kill bought two more attempts — a cap meant to make reviews faster made
+ * them three times slower.
+ *
  * Override with REVIEW_EXEC_IDLE_TIMEOUT_MS when a slower agent needs more.
  */
-const EXEC_IDLE_TIMEOUT_MS = 480_000;
+const EXEC_IDLE_TIMEOUT_MS = 900_000;
 
 /**
  * Hard ceiling on one exec call, independent of whether it is still talking.
@@ -661,7 +667,11 @@ async function requestExecCompletionOnce(input: CompletionRequest): Promise<Comp
     const failStalled = () => {
       terminate();
       finish(() =>
-        reject(new RetryableProviderError(`CLI produced no stdout for ${execIdleMs}ms`)),
+        reject(
+          new ProviderRequestError(
+            `CLI produced no stdout for ${execIdleMs}ms; not retried (silence for a full budget is not transient)`,
+          ),
+        ),
       );
     };
     const touch = () => {
