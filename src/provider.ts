@@ -51,6 +51,20 @@ const COMPLETION_IDLE_TIMEOUT_MS = 120_000;
  */
 const EXEC_IDLE_TIMEOUT_MS = 900_000;
 
+/**
+ * Hard ceiling on one exec call, independent of whether it is still talking.
+ *
+ * Override with REVIEW_EXEC_TOTAL_TIMEOUT_MS.
+ */
+const EXEC_TOTAL_TIMEOUT_MS = 1_200_000;
+
+function execTotalTimeoutMs(env: Readonly<Record<string, string | undefined>>): number {
+  const raw = env.REVIEW_EXEC_TOTAL_TIMEOUT_MS?.trim();
+  if (!raw) return EXEC_TOTAL_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : EXEC_TOTAL_TIMEOUT_MS;
+}
+
 function execIdleTimeoutMs(env: Readonly<Record<string, string | undefined>>): number {
   const raw = env.REVIEW_EXEC_IDLE_TIMEOUT_MS?.trim();
   if (!raw) return EXEC_IDLE_TIMEOUT_MS;
@@ -614,6 +628,7 @@ async function requestCompletionOnce(input: CompletionRequest): Promise<Completi
 async function requestExecCompletionOnce(input: CompletionRequest): Promise<CompletionResult> {
   if (!("command" in input.provider)) throw new ProviderRequestError("exec provider was not resolved");
   const execIdleMs = execIdleTimeoutMs(process.env);
+  const execTotalMs = execTotalTimeoutMs(process.env);
   const command = input.provider.command;
 
   return new Promise<CompletionResult>((resolve, reject) => {
@@ -653,13 +668,22 @@ async function requestExecCompletionOnce(input: CompletionRequest): Promise<Comp
       if (settled) return;
       clearTimeout(idle);
       idle = setTimeout(failStalled, execIdleMs);
+
     };
+    // Deliberately NOT retryable. A run that exhausted its total budget will
+    // exhaust it again, so retrying turns one slow review into three: with the
+    // batched panel's four calls that is hours of held runners, which is
+    // exactly how five pull requests ended up queued behind one agent.
     const total = setTimeout(() => {
       terminate();
       finish(() =>
-        reject(new RetryableProviderError(`CLI exceeded ${COMPLETION_TOTAL_TIMEOUT_MS}ms`)),
+        reject(
+          new ProviderRequestError(
+            `CLI exceeded ${execTotalMs}ms total; not retried (a budget that blew once will blow again)`,
+          ),
+        ),
       );
-    }, COMPLETION_TOTAL_TIMEOUT_MS);
+    }, execTotalMs);
 
     touch();
     child.stdout.setEncoding("utf8");
