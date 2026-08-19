@@ -82,22 +82,37 @@ export function firstByteTimeoutMs(
  * costing ten minutes per run and contributing no findings, while trivial
  * diffs squeaked in under the wire and looked like success.
  *
- * Eight minutes was tried and reverted: Grok emits nothing until it finishes,
- * so this budget is effectively a total one, and the tighter value killed
- * legitimate reviews mid-inspection. Because the error was retryable, each
- * kill bought two more attempts — a cap meant to make reviews faster made
- * them three times slower.
+ * Eight minutes was tried and reverted once, when this budget was effectively
+ * a total one: the agent emitted nothing until it finished, so any cap below
+ * the whole review killed working inspections. That is no longer true —
+ * narration on stderr resets the clock, so this measures actual silence.
+ *
+ * Six minutes, then, is six minutes of an agent saying nothing at all, which
+ * is a stall rather than a slow review. It was ten minutes of exactly that on
+ * ceiling PR 345: narration through turn five, then not one event for the rest
+ * of the budget. Failing at six instead of fifteen hands the review to the
+ * other generator nine minutes sooner, which is the difference between a
+ * review that lands late and a review that does not land.
  *
  * Override with REVIEW_EXEC_IDLE_TIMEOUT_MS when a slower agent needs more.
  */
-const EXEC_IDLE_TIMEOUT_MS = 900_000;
+const EXEC_IDLE_TIMEOUT_MS = 360_000;
 
 /**
  * Hard ceiling on one exec call, independent of whether it is still talking.
  *
+ * Ten minutes, not twenty. A review is two of these calls — generation and the
+ * panel — inside a thirty-minute wall clock, and twenty each never fit. It
+ * also has to fit a person's attention: an agentic reviewer nobody waits for
+ * is a reviewer nobody reads, and the incumbent this replaces answers in about
+ * five. Measured at reasoning effort "high", generation ran 557s on a two-file
+ * pull request and blew twenty minutes on a large re-pass; at "medium" the
+ * same work is meant to land inside this budget, and when it does not, the
+ * second generator carries the review rather than the review failing.
+ *
  * Override with REVIEW_EXEC_TOTAL_TIMEOUT_MS.
  */
-const EXEC_TOTAL_TIMEOUT_MS = 1_200_000;
+const EXEC_TOTAL_TIMEOUT_MS = 600_000;
 
 function execTotalTimeoutMs(env: Readonly<Record<string, string | undefined>>): number {
   const raw = env.REVIEW_EXEC_TOTAL_TIMEOUT_MS?.trim();

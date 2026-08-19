@@ -62,6 +62,7 @@ New-Item -ItemType Directory -Path $reviewHome -Force | Out-Null
 #
 # disabled_mcp_servers is a top-level key and must stay above the first table
 # header, or TOML reads it as a member of that table and it does nothing.
+$effort = if ($env:CODEREV_GROK_EFFORT) { $env:CODEREV_GROK_EFFORT } else { "medium" }
 $reviewConfig = @'
 disabled_mcp_servers = ["toolport"]
 
@@ -75,6 +76,17 @@ official_marketplace_auto_installed = true
 
 [models]
 default = "grok-4.6"
+# Effort is the single biggest lever on wall clock, and wall clock is what
+# decides whether a review is read. Measured at "high": a two-file pull request
+# spent 557s in generation over nine turns, most of it in thinking pauses
+# between tool calls -- 77s, 143s, then 255s on one turn -- and a large re-pass
+# blew a twenty-minute budget without finishing. The reviewer's job is to read
+# the changed code and say what is wrong with it, and it does that at "medium"
+# for a fraction of the wait.
+#
+# Raise it with CODEREV_GROK_EFFORT when a diff genuinely deserves the extra
+# thinking. The personal home stays at xhigh; this only binds the reviewer.
+default_reasoning_effort = "REVIEW_EFFORT_PLACEHOLDER"
 
 [ui]
 compact_mode = false
@@ -89,6 +101,11 @@ hooks = false
 mcps = false
 hooks = false
 '@
+# Substituted on its own line. Windows PowerShell 5.1 runs this wrapper, and it
+# does not accept a method call appended to a here-string terminator the way
+# pwsh 7 does -- written that way the effort line went missing from the config
+# with no error at all.
+$reviewConfig = $reviewConfig.Replace("REVIEW_EFFORT_PLACEHOLDER", $effort)
 [IO.File]::WriteAllText(
     (Join-Path $reviewHome "config.toml"), $reviewConfig, [Text.UTF8Encoding]::new($false))
 
