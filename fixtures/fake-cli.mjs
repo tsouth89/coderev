@@ -2,7 +2,12 @@ let prompt = "";
 process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) prompt += chunk;
 
-if (process.argv.includes("--empty")) {
+if (process.argv.includes("--die")) {
+  // Stands in for the agentic CLI blowing its wall-clock budget: the review
+  // must ride on the other generator rather than reporting that it did not run.
+  process.stderr.write("CLI exceeded its budget\n");
+  process.exitCode = 1;
+} else if (process.argv.includes("--empty")) {
   // Successful process with no completion must not become a clean review.
 } else if (!prompt.includes("SYSTEM SENTINEL") || !prompt.includes("USER SENTINEL")) {
   process.stderr.write("expected both prompts on stdin\n");

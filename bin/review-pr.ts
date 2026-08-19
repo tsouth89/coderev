@@ -223,6 +223,7 @@ async function main(): Promise<number> {
     find2Usage,
     panelUsage,
     generationError,
+    panelError,
   } = await reviewDiff({
     diff,
     conventions,
@@ -274,6 +275,19 @@ async function main(): Promise<number> {
       return 0;
     }
     throw new Error(`Review did not run: ${generationError}`);
+  }
+
+  // The panel is the second door into the same lie. Generation can succeed,
+  // every seat can then die, and each candidate is dropped for want of a vote
+  // — leaving an empty findings list that formats as "nothing survived" and
+  // reads as a clean review. Refusing to post is the only honest option: the
+  // candidates were never judged.
+  if (panelError !== null) {
+    if (gate !== "") {
+      console.error(`Review did not run (${panelError}); gate is fail-open, not blocking.`);
+      return 0;
+    }
+    throw new Error(`Review did not run: ${panelError}`);
   }
 
   const comment = formatReviewComment({

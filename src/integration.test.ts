@@ -89,6 +89,14 @@ function reset(): void {
   behaviour.requestCount = 0;
 }
 
+const DIFF = "--- a\n+++ b\n";
+
+/** An exec provider that exits non-zero, standing in for a blown budget. */
+const dyingAgent = {
+  command: `"${process.execPath}" "${resolve("fixtures/fake-cli.mjs")}" --die`,
+  model: "fake-agent",
+};
+
 describe("pipeline against a streaming provider", () => {
   it("keeps the survivor and drops the refuted finding", async () => {
     reset();
@@ -240,6 +248,52 @@ describe("exec provider against a real child process", () => {
       cachedInputTokens: 0,
       reported: false,
     });
+  });
+
+  it("rides on the second generator when the agentic CLI blows its budget", async () => {
+    // Load-bearing since 2026-08-19. The agent gets twenty minutes per call so
+    // that generation plus the panel fit inside the review's thirty-minute
+    // ceiling, and on a large re-pass diff it can spend all twenty and still be
+    // reading -- toolport PR 813 was at turn 34 when the cap landed. A review
+    // must not die because its better generator ran long.
+    reset();
+    behaviour.findResponse = JSON.stringify({
+      findings: [{ file: "a.ts", line: 1, title: "Second generator found it", detail: "Real." }],
+    });
+    const result = await reviewDiff({
+      diff: DIFF,
+      conventions: null,
+      provider: dyingAgent,
+      find2Provider: provider,
+      refuteProvider: provider,
+    });
+
+    assert.equal(result.generationError, null, "a review that produced findings did run");
+    assert.equal(result.panelError, null);
+    assert.equal(result.findings.length, 1);
+    assert.equal(result.findings[0]?.title, "Second generator found it");
+  });
+
+  it("refuses to call a review clean when every panel seat died", async () => {
+    // The second door into this tool's worst output. Generation succeeds, the
+    // panel provider is the one that is down, every candidate is dropped for
+    // want of a vote, and an empty findings list formats as "nothing survived"
+    // -- indistinguishable from a genuinely clean pull request.
+    reset();
+    behaviour.findResponse = JSON.stringify({
+      findings: [{ file: "a.ts", line: 1, title: "Never judged", detail: "Real." }],
+    });
+    const result = await reviewDiff({
+      diff: DIFF,
+      conventions: null,
+      provider,
+      refuteProvider: dyingAgent,
+    });
+
+    assert.equal(result.generationError, null, "generation itself was fine");
+    assert.equal(result.candidates.length, 1, "the candidate existed");
+    assert.equal(result.findings.length, 0, "and was dropped for want of a vote");
+    assert.match(String(result.panelError), /never voted/);
   });
 
   it("rejects a successful CLI that emits no completion", async () => {

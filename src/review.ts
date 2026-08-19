@@ -1837,6 +1837,37 @@ async function runPanel(input: {
   });
 }
 
+/**
+ * Verdict reasons that mean a seat never actually voted.
+ *
+ * A seat that errors out is recorded as a refusal to vouch, which is the right
+ * call for one dead seat among several. It is the wrong call for ALL of them:
+ * every candidate is then dropped for want of a vote, the comment says nothing
+ * survived, and that reads exactly like a clean review. This tool's whole
+ * premise is that an all-clear from a review that did not happen is its worst
+ * possible output, and the panel is a second door into it.
+ *
+ * A model that answered badly is not an outage — "unparseable verdict" stays
+ * out of this set, because a panel that replies with rubbish still replied.
+ */
+const PANEL_OUTAGE_REASONS: ReadonlySet<string> = new Set([
+  "panel seat failed",
+  "vote failed",
+  "missing verdict",
+]);
+
+/** True when no seat cast a real vote on any candidate. */
+export function panelNeverVoted(judged: ReadonlyArray<AdjudicatedFinding>): boolean {
+  if (judged.length === 0) return false;
+  return judged.every(
+    (entry) =>
+      entry.verdicts.length > 0 &&
+      entry.verdicts.every(
+        (verdict) => verdict.refuted && PANEL_OUTAGE_REASONS.has(verdict.reason),
+      ),
+  );
+}
+
 export interface DiffReviewResult {
   readonly candidates: ReadonlyArray<ReviewFinding>;
   readonly findings: ReadonlyArray<ReviewFinding>;
@@ -1864,6 +1895,16 @@ export interface DiffReviewResult {
    * Callers must check this before presenting an empty result as good news.
    */
   readonly generationError: string | null;
+  /**
+   * Why the panel could not judge, or null if it did.
+   *
+   * Separate from generationError because the two fail differently and read
+   * identically: generation produced candidates, and then every seat died, so
+   * the findings list is empty for a reason that has nothing to do with the
+   * code. Callers must check this before presenting an empty result as good
+   * news, exactly as they must check generationError.
+   */
+  readonly panelError: string | null;
 }
 
 /**
@@ -1970,6 +2011,7 @@ export async function reviewDiff(input: {
       find2Usage: EMPTY_USAGE,
       panelUsage: EMPTY_USAGE,
       generationError,
+      panelError: null,
     };
   }
   if (!primary.ok) note(`Primary generator failed, continuing on the second: ${primary.error}`);
@@ -2107,5 +2149,10 @@ export async function reviewDiff(input: {
     find2Usage,
     panelUsage,
     generationError: null,
+    // Judged, not adjudicated: the pass-through findings never went to a seat,
+    // so counting them would hide an outage behind work the panel never did.
+    panelError: panelNeverVoted(judged)
+      ? "the refutation panel never voted; every seat failed"
+      : null,
   };
 }
