@@ -33,7 +33,42 @@ import { spawn } from "node:child_process";
  * measures the thing that actually matters, which is whether anything is still
  * arriving. The total cap only exists to stop an infinite trickle.
  */
-const COMPLETION_IDLE_TIMEOUT_MS = 120_000;
+export const COMPLETION_IDLE_TIMEOUT_MS = 120_000;
+
+/**
+ * Separate budget for the wait before the FIRST byte of the answer.
+ *
+ * The idle budget assumes tokens are already flowing, so two minutes of
+ * silence means the connection died. Nothing is flowing yet before the first
+ * chunk: the model is reading a large diff and thinking, and a reasoning model
+ * can spend longer on that than on the whole rest of the response. Arming the
+ * idle timer over that window makes us hang up on a model that is working, and
+ * the provider's own dashboard shows nothing wrong because the client is the
+ * one that quit. That is exactly what muse-spark did on 2026-08-19: three
+ * attempts, each failing at precisely 120000ms, while the same model had
+ * returned five of eight candidates hours earlier.
+ *
+ * The budget SHRINKS to the idle value after the first attempt. Paying five
+ * minutes once buys a slow model the room to start; paying it three times
+ * turns one slow call into a quarter-hour and eats the review's own ceiling. A
+ * model that could not start inside five minutes is not going to be rescued by
+ * doing it again.
+ *
+ * Override the first attempt with REVIEW_FIRST_BYTE_TIMEOUT_MS.
+ */
+export const COMPLETION_FIRST_BYTE_TIMEOUT_MS = 300_000;
+
+export function firstByteTimeoutMs(
+  env: Readonly<Record<string, string | undefined>>,
+  attempt: number,
+): number {
+  if (attempt > 0) return COMPLETION_IDLE_TIMEOUT_MS;
+  const raw = env.REVIEW_FIRST_BYTE_TIMEOUT_MS?.trim();
+  if (!raw) return COMPLETION_FIRST_BYTE_TIMEOUT_MS;
+  const parsed = Number(raw);
+  // A malformed override keeps the default rather than removing the bound.
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : COMPLETION_FIRST_BYTE_TIMEOUT_MS;
+}
 
 /**
  * Exec providers get their own, much larger idle budget.
@@ -540,7 +575,7 @@ export async function requestCompletion(input: CompletionRequest): Promise<Compl
   let lastError: unknown;
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
     try {
-      return await requestCompletionOnce(input);
+      return await requestCompletionOnce(input, attempt);
     } catch (cause) {
       lastError = cause;
       const retryable = cause instanceof RetryableProviderError;
@@ -553,15 +588,26 @@ export async function requestCompletion(input: CompletionRequest): Promise<Compl
   throw lastError;
 }
 
-async function requestCompletionOnce(input: CompletionRequest): Promise<CompletionResult> {
+async function requestCompletionOnce(
+  input: CompletionRequest,
+  attempt = 0,
+): Promise<CompletionResult> {
   if ("command" in input.provider) return requestExecCompletionOnce(input);
 
   const controller = new AbortController();
   const total = setTimeout(() => controller.abort(), COMPLETION_TOTAL_TIMEOUT_MS);
+  const firstByteMs = firstByteTimeoutMs(process.env, attempt);
   let idle: NodeJS.Timeout | undefined;
+  // Which clock is running decides what the failure MEANS, so the two are
+  // never collapsed: "it never started" and "it stopped mid-answer" want
+  // different fixes, and for a year they produced the same sentence.
+  let sawFirstByte = false;
   const touch = () => {
     clearTimeout(idle);
-    idle = setTimeout(() => controller.abort(), COMPLETION_IDLE_TIMEOUT_MS);
+    idle = setTimeout(
+      () => controller.abort(),
+      sawFirstByte ? COMPLETION_IDLE_TIMEOUT_MS : firstByteMs,
+    );
   };
 
   try {
@@ -584,6 +630,15 @@ async function requestCompletionOnce(input: CompletionRequest): Promise<Completi
       }),
       signal: controller.signal,
     }).catch((cause: unknown) => {
+      // The budget can run out here too, before a single response header
+      // arrives, and the raw AbortError says only "This operation was
+      // aborted" — which reads like a bug in us rather than a provider that
+      // never answered.
+      if (controller.signal.aborted) {
+        throw new RetryableProviderError(
+          `no response headers in ${firstByteMs}ms (the model never started answering)`,
+        );
+      }
       // Connection resets and DNS blips are exactly what backoff is for.
       throw new RetryableProviderError(cause instanceof Error ? cause.message : String(cause));
     });
@@ -605,6 +660,7 @@ async function requestCompletionOnce(input: CompletionRequest): Promise<Completi
 
     try {
       for await (const part of response.body) {
+        sawFirstByte = true;
         touch();
         buffered += decoder.decode(part as Uint8Array, { stream: true });
         const lines = buffered.split("\n");
@@ -614,10 +670,15 @@ async function requestCompletionOnce(input: CompletionRequest): Promise<Completi
         for (const line of lines) applyStreamLine(line, state);
       }
     } catch (cause) {
+      if (!controller.signal.aborted) {
+        throw new RetryableProviderError(
+          `stream failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
       throw new RetryableProviderError(
-        controller.signal.aborted
-          ? `stream stalled for ${COMPLETION_IDLE_TIMEOUT_MS}ms`
-          : `stream failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        sawFirstByte
+          ? `stream went quiet for ${COMPLETION_IDLE_TIMEOUT_MS}ms after ${state.content.length} characters`
+          : `no first byte in ${firstByteMs}ms (the model never started answering)`,
       );
     }
     applyStreamLine(buffered, state);

@@ -4,6 +4,9 @@ import { describe, it } from "node:test";
 import {
   addUsage,
   applyStreamLine,
+  COMPLETION_FIRST_BYTE_TIMEOUT_MS,
+  COMPLETION_IDLE_TIMEOUT_MS,
+  firstByteTimeoutMs,
   DEFAULT_REVIEW_PROVIDER,
   EMPTY_USAGE,
   estimateCostUsd,
@@ -377,5 +380,41 @@ describe("usage and cost", () => {
       REVIEW_PRICE_OUT: "4",
     });
     assert.ok(Math.abs((cost ?? 0) - 2) < 1e-9);
+  });
+});
+
+describe("first-byte budget", () => {
+  it("gives the first attempt longer than the idle budget", () => {
+    // The idle budget assumes tokens are already flowing. Nothing is flowing
+    // before the first chunk: the model is reading the diff and thinking, and
+    // arming the idle clock over that window hangs up on a model that is
+    // working. muse-spark failed three times at precisely 120000ms on
+    // 2026-08-19 while the provider's dashboard showed nothing wrong.
+    assert.equal(firstByteTimeoutMs({}, 0), COMPLETION_FIRST_BYTE_TIMEOUT_MS);
+    assert.ok(COMPLETION_FIRST_BYTE_TIMEOUT_MS > COMPLETION_IDLE_TIMEOUT_MS);
+  });
+
+  it("shrinks back to the idle budget on every retry", () => {
+    // Paying five minutes once buys a slow model room to start. Paying it on
+    // all four attempts turns one slow call into a quarter of an hour and eats
+    // the review's own thirty-minute ceiling, so the worst case stays at
+    // 300s + 120s + 120s + 120s rather than four times 300s.
+    assert.equal(firstByteTimeoutMs({}, 1), COMPLETION_IDLE_TIMEOUT_MS);
+    assert.equal(firstByteTimeoutMs({}, 2), COMPLETION_IDLE_TIMEOUT_MS);
+    assert.equal(firstByteTimeoutMs({ REVIEW_FIRST_BYTE_TIMEOUT_MS: "600000" }, 1), COMPLETION_IDLE_TIMEOUT_MS);
+  });
+
+  it("takes an override on the first attempt only", () => {
+    assert.equal(firstByteTimeoutMs({ REVIEW_FIRST_BYTE_TIMEOUT_MS: "600000" }, 0), 600_000);
+    assert.equal(firstByteTimeoutMs({ REVIEW_FIRST_BYTE_TIMEOUT_MS: " 600000 " }, 0), 600_000);
+  });
+
+  it("keeps the default when the override is junk", () => {
+    for (const raw of ["", "soon", "0", "-1"]) {
+      assert.equal(
+        firstByteTimeoutMs({ REVIEW_FIRST_BYTE_TIMEOUT_MS: raw }, 0),
+        COMPLETION_FIRST_BYTE_TIMEOUT_MS,
+      );
+    }
   });
 });
