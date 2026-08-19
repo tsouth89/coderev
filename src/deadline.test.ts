@@ -10,6 +10,20 @@ describe("review deadline", () => {
     assert.equal(reviewDeadlineMs({ REVIEW_DEADLINE_MS: "" }), 1_800_000);
   });
 
+  it("clears the worst generation-plus-panel pair actually observed", () => {
+    // The ceiling is a backstop, not a participant. A review is two exec calls
+    // run back to back, and the worst real pair measured on the fleet is 1031s
+    // of generation (ceiling PR 345, findings posted) followed by a 571s panel.
+    // If the ceiling ever drops below that, it stops catching hangs and starts
+    // killing reviews that were about to land — which is the failure it exists
+    // to prevent, with the sign flipped.
+    const WORST_OBSERVED_PAIR_MS = 1_031_000 + 571_000;
+    assert.ok(
+      reviewDeadlineMs({}) > WORST_OBSERVED_PAIR_MS,
+      `ceiling ${reviewDeadlineMs({})}ms must clear the ${WORST_OBSERVED_PAIR_MS}ms pair already seen`,
+    );
+  });
+
   it("takes an explicit override", () => {
     assert.equal(reviewDeadlineMs({ REVIEW_DEADLINE_MS: "60000" }), 60_000);
     assert.equal(reviewDeadlineMs({ REVIEW_DEADLINE_MS: " 60000 " }), 60_000);

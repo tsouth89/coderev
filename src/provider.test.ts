@@ -6,6 +6,8 @@ import {
   applyStreamLine,
   COMPLETION_FIRST_BYTE_TIMEOUT_MS,
   COMPLETION_IDLE_TIMEOUT_MS,
+  execIdleTimeoutMs,
+  execTotalTimeoutMs,
   firstByteTimeoutMs,
   DEFAULT_REVIEW_PROVIDER,
   EMPTY_USAGE,
@@ -416,5 +418,44 @@ describe("first-byte budget", () => {
         COMPLETION_FIRST_BYTE_TIMEOUT_MS,
       );
     }
+  });
+});
+
+describe("exec budgets are big enough for a real agentic review", () => {
+  // These are floors held against measured production runs, not taste. Both
+  // were tightened once in the name of speed and the tighter pair truncated
+  // generation mid-inspection on ceiling PR 341: zero candidates returned, the
+  // whole budget spent, nothing delivered. A budget that cuts the work off is
+  // strictly worse than a slow review, because it pays the full cost for none
+  // of the value.
+  const GENERATION_MS = 1_031_000; // ceiling PR 345, 15 turns, findings posted
+  const LONGEST_THINKING_PAUSE_MS = 255_000; // toolport PR 813, between two tool calls
+
+  it("lets a generation call that legitimately took 1031s finish", () => {
+    assert.ok(
+      execTotalTimeoutMs({}) > GENERATION_MS,
+      `total budget ${execTotalTimeoutMs({})}ms must exceed the ${GENERATION_MS}ms this stage really took`,
+    );
+  });
+
+  it("leaves real headroom over the longest measured thinking pause", () => {
+    // The idle clock now measures actual silence, since narration on stderr
+    // resets it. Silence is only a stall well past the point where the agent
+    // is plausibly still thinking.
+    assert.ok(
+      execIdleTimeoutMs({}) >= 2 * LONGEST_THINKING_PAUSE_MS,
+      `idle budget ${execIdleTimeoutMs({})}ms leaves too little room over a ${LONGEST_THINKING_PAUSE_MS}ms pause`,
+    );
+  });
+
+  it("keeps the idle budget below the total, so a stall ends sooner than a slow review", () => {
+    assert.ok(execIdleTimeoutMs({}) < execTotalTimeoutMs({}));
+  });
+
+  it("still takes overrides", () => {
+    assert.equal(execTotalTimeoutMs({ REVIEW_EXEC_TOTAL_TIMEOUT_MS: "60000" }), 60_000);
+    assert.equal(execIdleTimeoutMs({ REVIEW_EXEC_IDLE_TIMEOUT_MS: "30000" }), 30_000);
+    // A typo must not remove the bound.
+    assert.equal(execTotalTimeoutMs({ REVIEW_EXEC_TOTAL_TIMEOUT_MS: "soon" }), 1_200_000);
   });
 });

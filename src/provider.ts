@@ -87,41 +87,44 @@ export function firstByteTimeoutMs(
  * the whole review killed working inspections. That is no longer true —
  * narration on stderr resets the clock, so this measures actual silence.
  *
- * Six minutes, then, is six minutes of an agent saying nothing at all, which
- * is a stall rather than a slow review. It was ten minutes of exactly that on
- * ceiling PR 345: narration through turn five, then not one event for the rest
- * of the budget. Failing at six instead of fifteen hands the review to the
- * other generator nine minutes sooner, which is the difference between a
- * review that lands late and a review that does not land.
+ * Ten minutes, then, is ten minutes of an agent saying nothing at all, which
+ * is a stall rather than a slow review. The longest real thinking pause
+ * measured between two tool calls is 255s, so this leaves better than double
+ * the headroom: it must never be the thing that ends a review still doing
+ * work. Six minutes was tried for exactly one build and is not worth the
+ * risk — the failure it prevents costs minutes, the failure it causes costs
+ * the review.
  *
  * Override with REVIEW_EXEC_IDLE_TIMEOUT_MS when a slower agent needs more.
  */
-const EXEC_IDLE_TIMEOUT_MS = 360_000;
+const EXEC_IDLE_TIMEOUT_MS = 600_000;
 
 /**
  * Hard ceiling on one exec call, independent of whether it is still talking.
  *
- * Ten minutes, not twenty. A review is two of these calls — generation and the
- * panel — inside a thirty-minute wall clock, and twenty each never fit. It
- * also has to fit a person's attention: an agentic reviewer nobody waits for
- * is a reviewer nobody reads, and the incumbent this replaces answers in about
- * five. Measured at reasoning effort "high", generation ran 557s on a two-file
- * pull request and blew twenty minutes on a large re-pass; at "medium" the
- * same work is meant to land inside this budget, and when it does not, the
- * second generator carries the review rather than the review failing.
+ * Twenty minutes, because a real review needs them. Ten was tried and cut
+ * generation off mid-inspection on ceiling PR 341 — the agent produced zero
+ * candidates and the ten minutes bought nothing, while the same stage on PR
+ * 345 legitimately ran 1031s and returned findings that posted. A budget that
+ * truncates the work is worse than a slow review: it spends the whole cost and
+ * delivers none of the value.
+ *
+ * A review is two of these calls, generation then the panel, and the observed
+ * worst pair is 1031s + 571s. That fits the review's own wall clock with a few
+ * minutes to spare rather than comfortably, which is the honest description.
  *
  * Override with REVIEW_EXEC_TOTAL_TIMEOUT_MS.
  */
-const EXEC_TOTAL_TIMEOUT_MS = 600_000;
+const EXEC_TOTAL_TIMEOUT_MS = 1_200_000;
 
-function execTotalTimeoutMs(env: Readonly<Record<string, string | undefined>>): number {
+export function execTotalTimeoutMs(env: Readonly<Record<string, string | undefined>>): number {
   const raw = env.REVIEW_EXEC_TOTAL_TIMEOUT_MS?.trim();
   if (!raw) return EXEC_TOTAL_TIMEOUT_MS;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : EXEC_TOTAL_TIMEOUT_MS;
 }
 
-function execIdleTimeoutMs(env: Readonly<Record<string, string | undefined>>): number {
+export function execIdleTimeoutMs(env: Readonly<Record<string, string | undefined>>): number {
   const raw = env.REVIEW_EXEC_IDLE_TIMEOUT_MS?.trim();
   if (!raw) return EXEC_IDLE_TIMEOUT_MS;
   const parsed = Number(raw);
