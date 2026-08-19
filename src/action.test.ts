@@ -77,9 +77,37 @@ describe("Grok action wrapper invariants", () => {
     // The config the wrapper writes is the whole point of the isolation.
     const config = wrapper.split("@'")[1]?.split("'@")[0] ?? "";
     assert.ok(config.includes("[cli]"), "the wrapper must write a config for the review home");
-    assert.doesNotMatch(config, /mcp_servers/);
+    // Declaring no server is not enough, and this is the part that took a
+    // second pass to find. Grok scans other harnesses by default: with a clean
+    // review home the gateway came straight back, sourced from `~/.claude.json
+    // [claude]`. `grok inspect` names the origin; these switches close it.
+    assert.match(config, /\[compat\.claude\][\s\S]*?mcps = false/);
+    assert.match(config, /\[compat\.cursor\][\s\S]*?mcps = false/);
+    // The same scan imports the harness's command hooks, which run on every
+    // tool call — a stall risk, and a console window per hook on a machine
+    // somebody is sitting at.
+    assert.match(config, /\[compat\.claude\][\s\S]*?hooks = false/);
+    assert.match(config, /\[compat\.cursor\][\s\S]*?hooks = false/);
+    assert.match(config, /disabled_mcp_servers = \["toolport"\]/);
+    // Top-level key: below a table header TOML reads it as that table's member
+    // and it silently does nothing.
+    assert.ok(
+      config.indexOf("disabled_mcp_servers") < config.indexOf("["),
+      "disabled_mcp_servers must precede the first table header",
+    );
+    // The reviewer never declares a server of its own.
+    assert.doesNotMatch(config, /\[mcp_servers\./);
     // A self-update inside a review is a stall, not an upgrade.
     assert.match(config, /auto_update = false/);
     assert.match(config, /permission_mode = "always-approve"/);
+
+    // Env vars carry the same intent without depending on the file being
+    // found, parsed, or still saying this tomorrow.
+    assert.match(wrapper, /\$env:GROK_CLAUDE_MCPS_ENABLED = "0"/);
+    assert.match(wrapper, /\$env:GROK_CURSOR_MCPS_ENABLED = "0"/);
+
+    // A BOM makes the TOML unparseable and the isolation a no-op, so the
+    // config must not go through Set-Content's UTF-8.
+    assert.match(wrapper, /WriteAllText\([\s\S]*?UTF8Encoding\]::new\(\$false\)\)/);
   });
 });

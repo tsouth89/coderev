@@ -37,6 +37,15 @@ $ErrorActionPreference = "Stop"
 # desktop app is doing, and a startup that does not touch the network. Only the
 # credential file is shared, so a `grok login` at the terminal still authorises
 # the fleet.
+#
+# GROK_HOME alone is NOT enough, and `grok inspect` is the tool that says why.
+# Grok scans other harnesses by default and imports what it finds, so with a
+# clean review home the gateway came back sourced from `~/.claude.json
+# [claude]` — an MCP server the reviewer never declared, arriving from Claude
+# Code's config. The [compat.*] switches below are the ones that actually close
+# it. The same scan imports twenty-one command hooks that run on every tool
+# call, which is both a stall risk and a console window per hook on a machine
+# somebody is sitting at.
 $personalHome = Join-Path $env:USERPROFILE ".grok"
 $reviewHome = Join-Path $env:USERPROFILE ".grok-coderev"
 New-Item -ItemType Directory -Path $reviewHome -Force | Out-Null
@@ -46,7 +55,16 @@ New-Item -ItemType Directory -Path $reviewHome -Force | Out-Null
 # point of this file is that the reviewer's environment is not negotiable.
 # auto_update is off because a 142 MB self-update inside a review is a stall,
 # and the interactive home still updates the shared binary.
-@'
+#
+# Written WITHOUT a byte order mark. Set-Content -Encoding utf8 on Windows
+# PowerShell 5.1 emits one, the TOML parser rejects the file, and the isolation
+# silently does nothing.
+#
+# disabled_mcp_servers is a top-level key and must stay above the first table
+# header, or TOML reads it as a member of that table and it does nothing.
+$reviewConfig = @'
+disabled_mcp_servers = ["toolport"]
+
 [cli]
 auto_update = false
 installer = "internal"
@@ -63,12 +81,24 @@ compact_mode = false
 permission_mode = "always-approve"
 yolo = false
 
-[privacy]
-privacy_banner_acked = "2026-08-19T00:00:00Z"
-'@ | Set-Content -LiteralPath (Join-Path $reviewHome "config.toml") -Encoding utf8
+[compat.claude]
+mcps = false
+hooks = false
+
+[compat.cursor]
+mcps = false
+hooks = false
+'@
+[IO.File]::WriteAllText(
+    (Join-Path $reviewHome "config.toml"), $reviewConfig, [Text.UTF8Encoding]::new($false))
 
 $env:GROK_HOME = $reviewHome
 $env:GROK_AUTH_PATH = Join-Path $personalHome "auth.json"
+# Belt and braces for the import that actually caused the outage: the env vars
+# do not depend on the config file being found, parsed, or still saying what it
+# says today.
+$env:GROK_CLAUDE_MCPS_ENABLED = "0"
+$env:GROK_CURSOR_MCPS_ENABLED = "0"
 
 $promptText = [Console]::In.ReadToEnd()
 if ([string]::IsNullOrWhiteSpace($promptText)) {
