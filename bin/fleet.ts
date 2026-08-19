@@ -33,9 +33,14 @@ const GREEN = "[32m";
 const YELLOW = "[33m";
 const RESET = "[0m";
 
+// Every child is spawned with the console window hidden. Without it a fleet
+// snapshot flashes a black window per call on the machine the runners share
+// with a human, and --watch does it every twenty seconds.
+const HIDDEN = { windowsHide: true } as const;
+
 async function gh(args: ReadonlyArray<string>): Promise<string> {
   try {
-    const { stdout } = await run("gh", [...args], { maxBuffer: 16 * 1024 * 1024 });
+    const { stdout } = await run("gh", [...args], { ...HIDDEN, maxBuffer: 16 * 1024 * 1024 });
     return stdout;
   } catch {
     // A failed query must not blank the whole dashboard: the other repos are
@@ -121,7 +126,42 @@ async function agentProcesses(): Promise<Array<{ pid: number; minutes: number }>
       "-Command",
       "$n=Get-Date; Get-Process -Name 'grok*' -ErrorAction SilentlyContinue | " +
         "ForEach-Object { '{0} {1}' -f $_.Id, [int]($n - $_.StartTime).TotalMinutes }",
-    ]);
+    ], HIDDEN);
+    return stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        const [pid, minutes] = line.split(/\s+/);
+        return { pid: Number(pid), minutes: Number(minutes) };
+      })
+      .filter((entry) => Number.isFinite(entry.pid));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * MCP gateways whose grok is already gone.
+ *
+ * The agent spawns a gateway per session and the gateway does not always die
+ * with it: nine were alive for four active jobs the morning the fleet hung,
+ * the oldest by four and a half hours. Parentage is the safe test — an
+ * age-only rule would kill the gateway serving a long interactive session at
+ * the terminal, which is not this tool's business.
+ */
+async function orphanGateways(): Promise<Array<{ pid: number; minutes: number }>> {
+  if (process.platform !== "win32") return [];
+  try {
+    const { stdout } = await run("powershell", [
+      "-NoProfile",
+      "-Command",
+      "$n=Get-Date; $alive=@{}; Get-Process -ErrorAction SilentlyContinue | " +
+        "ForEach-Object { $alive[$_.Id]=$true }; " +
+        "Get-CimInstance Win32_Process -Filter \"Name LIKE 'toolport-gateway%'\" " +
+        "-ErrorAction SilentlyContinue | Where-Object { -not $alive.ContainsKey([int]$_.ParentProcessId) } | " +
+        "ForEach-Object { '{0} {1}' -f $_.ProcessId, [int]($n - $_.CreationDate).TotalMinutes }",
+    ], HIDDEN);
     return stdout
       .split("\n")
       .map((line) => line.trim())
@@ -137,17 +177,23 @@ async function agentProcesses(): Promise<Array<{ pid: number; minutes: number }>
 }
 
 async function killStale(): Promise<void> {
-  const stale = (await agentProcesses()).filter((entry) => entry.minutes > STALE_MINUTES);
+  const [agents, gateways] = await Promise.all([agentProcesses(), orphanGateways()]);
+  const stale = [
+    ...agents.filter((entry) => entry.minutes > STALE_MINUTES).map((entry) => ({ ...entry, what: "agent" })),
+    // Orphans go at any age. There is nothing left to serve, and the ones that
+    // linger hold the registry and the tool cache the next session needs.
+    ...gateways.map((entry) => ({ ...entry, what: "orphan gateway" })),
+  ];
   if (stale.length === 0) {
-    console.log(`No agent process older than ${STALE_MINUTES}m.`);
+    console.log(`No agent process older than ${STALE_MINUTES}m, and no orphaned gateway.`);
     return;
   }
   for (const entry of stale) {
     // Kill the tree: the shell wrapper is the direct child, and killing only
     // that leaves the agent itself orphaned — which is how a process survived
     // its review by forty-seven minutes.
-    await run("taskkill", ["/PID", String(entry.pid), "/T", "/F"]).catch(() => undefined);
-    console.log(`killed pid ${entry.pid} (${entry.minutes}m)`);
+    await run("taskkill", ["/PID", String(entry.pid), "/T", "/F"], HIDDEN).catch(() => undefined);
+    console.log(`killed ${entry.what} pid ${entry.pid} (${entry.minutes}m)`);
   }
 }
 

@@ -2,6 +2,7 @@
 import { readFile } from "node:fs/promises";
 
 import { parse, reportFailure, requireString } from "../src/args.ts";
+import { reviewDeadlineMs, startReviewDeadline } from "../src/deadline.ts";
 import { fetchPullRequestContext } from "../src/context.ts";
 import { buildFileInventory } from "../src/inventory.ts";
 import { fileLinearFollowUps } from "../src/linear.ts";
@@ -378,4 +379,12 @@ async function main(): Promise<number> {
   return 0;
 }
 
-process.exitCode = await main().catch(reportFailure);
+// Armed before anything else so a hang anywhere — provider, agent, or the gh
+// CLI — is bounded by one number instead of by the sum of every per-call
+// budget. Cancelled on the way out so a fast review is not held up by it.
+const deadline = startReviewDeadline({ ms: reviewDeadlineMs(process.env) });
+try {
+  process.exitCode = await main().catch(reportFailure);
+} finally {
+  deadline.cancel();
+}

@@ -22,6 +22,54 @@ $ErrorActionPreference = "Stop"
 # them on stderr (which CodeRev forwards into the review log) and prints only
 # the final assistant message on stdout, keeping the JSON contract unchanged.
 
+# The reviewer runs against a REVIEW-ONLY grok home, not the interactive one.
+#
+# The interactive home declares MCP servers -- a Toolport gateway that fans out
+# to a dozen remote servers and builds 2100+ tools on every launch. On
+# 2026-08-19 that gateway stopped completing its handshake: grok logged
+# `mcp_server_starting`, never logged `mcp_server_connected`, and never accepted
+# the prompt. It did not honour its own startup_timeout_sec either, so the agent
+# sat mute until CodeRev's idle budget killed it. Sixty-six consecutive reviews
+# produced not one byte of stdout, and the job log showed nothing at all.
+#
+# A code reviewer needs read_file and grep, not Stripe and Linode. Isolating the
+# home removes the entire class: no MCP server, no dependency on whatever the
+# desktop app is doing, and a startup that does not touch the network. Only the
+# credential file is shared, so a `grok login` at the terminal still authorises
+# the fleet.
+$personalHome = Join-Path $env:USERPROFILE ".grok"
+$reviewHome = Join-Path $env:USERPROFILE ".grok-coderev"
+New-Item -ItemType Directory -Path $reviewHome -Force | Out-Null
+
+# Rewritten every run rather than seeded once: a config that drifts back to
+# declaring an MCP server would reintroduce the hang silently, and the whole
+# point of this file is that the reviewer's environment is not negotiable.
+# auto_update is off because a 142 MB self-update inside a review is a stall,
+# and the interactive home still updates the shared binary.
+@'
+[cli]
+auto_update = false
+installer = "internal"
+
+[marketplace]
+default_skills_installs_purged = true
+official_marketplace_auto_installed = true
+
+[models]
+default = "grok-4.6"
+
+[ui]
+compact_mode = false
+permission_mode = "always-approve"
+yolo = false
+
+[privacy]
+privacy_banner_acked = "2026-08-19T00:00:00Z"
+'@ | Set-Content -LiteralPath (Join-Path $reviewHome "config.toml") -Encoding utf8
+
+$env:GROK_HOME = $reviewHome
+$env:GROK_AUTH_PATH = Join-Path $personalHome "auth.json"
+
 $promptText = [Console]::In.ReadToEnd()
 if ([string]::IsNullOrWhiteSpace($promptText)) {
     Write-Error "CodeRev supplied an empty prompt."

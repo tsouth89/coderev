@@ -58,4 +58,28 @@ describe("Grok action wrapper invariants", () => {
     assert.match(invocation, /--output-format streaming-messages-json/);
     assert.doesNotMatch(invocation, /--verbatim/);
   });
+
+  it("runs the reviewer in a grok home that declares no MCP server", () => {
+    // The interactive home declares a Toolport MCP gateway. On 2026-08-19 that
+    // gateway stopped completing its handshake and grok blocked before reading
+    // the prompt -- sixty-six consecutive reviews produced zero bytes of stdout
+    // and died at the idle budget with nothing in the job log. The reviewer
+    // needs read_file and grep, not a fan-out to a dozen SaaS APIs, so it gets
+    // its own home and shares only the credential file.
+    const wrapper = readFileSync(resolve(repoRoot, "bin", "grok-stdin.ps1"), "utf8");
+
+    assert.match(wrapper, /\$env:GROK_HOME\s*=\s*\$reviewHome/);
+    assert.match(wrapper, /\.grok-coderev/);
+    // Credentials stay shared: a `grok login` at the terminal must authorise
+    // the fleet, or every token refresh becomes a manual step on this machine.
+    assert.match(wrapper, /\$env:GROK_AUTH_PATH\s*=\s*Join-Path \$personalHome "auth\.json"/);
+
+    // The config the wrapper writes is the whole point of the isolation.
+    const config = wrapper.split("@'")[1]?.split("'@")[0] ?? "";
+    assert.ok(config.includes("[cli]"), "the wrapper must write a config for the review home");
+    assert.doesNotMatch(config, /mcp_servers/);
+    // A self-update inside a review is a stall, not an upgrade.
+    assert.match(config, /auto_update = false/);
+    assert.match(config, /permission_mode = "always-approve"/);
+  });
 });
