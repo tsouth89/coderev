@@ -99,6 +99,8 @@ $env:GROK_AUTH_PATH = Join-Path $personalHome "auth.json"
 # says today.
 $env:GROK_CLAUDE_MCPS_ENABLED = "0"
 $env:GROK_CURSOR_MCPS_ENABLED = "0"
+# The reviewer reads the repo, not the web.
+$env:GROK_WEB_FETCH = "0"
 
 $promptText = [Console]::In.ReadToEnd()
 if ([string]::IsNullOrWhiteSpace($promptText)) {
@@ -124,11 +126,32 @@ try {
     $turns = 0
     $lastNote = $started
 
+    # No shell for the reviewer. Measured on toolport PR 813: of thirty-three
+    # turns, twelve were `run_terminal_command curl https://docs.devin.ai/...`
+    # — roughly four hundred seconds spent reading a vendor's documentation
+    # instead of the diff, which is what pushed that review past its budget.
+    # --disable-web-search removes the search tool but leaves a shell that can
+    # reach the internet, so the shell goes too.
+    #
+    # It has to be the ALLOWLIST. --disallowed-tools is documented and accepted
+    # and does nothing: with `--disallowed-tools run_terminal_command` the agent
+    # ran `echo` on the first turn. --tools was verified the same way — the
+    # shell is absent from the offered set and the agent answers NOSHELL — and
+    # this is the flag whose failure mode is loud, since an allowlist that is
+    # too small produces an agent that cannot read the repo at all.
+    #
+    # read_file, grep and list_dir are what a reviewer actually needs, and the
+    # earlier turns of the same run showed the shell being used for Get-Content
+    # and Get-ChildItem that those three already do. Dropping it also stops a
+    # console window being spawned per command on a machine somebody is sitting
+    # at. Do not narrow this further: `--tools none` once produced a silent
+    # zero-finding review on every run for two days.
     & grok --prompt-file $promptPath `
         --model $model `
         --output-format streaming-messages-json `
         --always-approve `
         --disable-web-search `
+        --tools read_file,grep,list_dir,todo_write `
         --no-subagents `
         --no-memory `
         --max-turns 80 2>$null |

@@ -43,6 +43,27 @@ describe("Grok action wrapper invariants", () => {
     assert.ok(turns, "the wrapper must set a turn budget");
     assert.ok(Number(turns[1]) >= 60, `turn budget too small: ${turns[1]}`);
     assert.match(invocation, /--disable-web-search/);
+    // The reviewer gets an ALLOWLIST of read tools and no shell. On toolport
+    // PR 813 twelve of thirty-three turns were `run_terminal_command curl
+    // https://docs.devin.ai/...` — about four hundred seconds reading a
+    // vendor's docs instead of the diff, which is what pushed that review past
+    // its budget. --disable-web-search removes the search tool and leaves a
+    // shell that reaches the internet anyway.
+    //
+    // It must be --tools. --disallowed-tools is accepted and ignored: with
+    // `--disallowed-tools run_terminal_command` the agent still ran echo on
+    // its first turn.
+    const allowed = invocation.match(/--tools ([\w,]+)/);
+    assert.ok(allowed, "the wrapper must pass a tool allowlist");
+    const tools = (allowed[1] ?? "").split(",");
+    assert.ok(!tools.includes("run_terminal_command"), "the reviewer gets no shell");
+    assert.ok(!tools.includes("web_fetch"), "the reviewer reads the repo, not the web");
+    // Too small an allowlist is the other failure: `--tools none` produced a
+    // silent zero-finding review on every run for two days, because reading
+    // the surrounding code is the whole reason for an agentic reviewer.
+    for (const needed of ["read_file", "grep", "list_dir"]) {
+      assert.ok(tools.includes(needed), `the reviewer must keep ${needed}`);
+    }
     // Subagents stay OFF. Enabling them hung the fleet: the extra narration
     // reset the idle timer on every chunk, so runs could only end at the total
     // cap, and one held a runner for forty-seven minutes while five pull

@@ -733,7 +733,7 @@ async function requestExecCompletionOnce(input: CompletionRequest): Promise<Comp
       finish(() =>
         reject(
           new ProviderRequestError(
-            `CLI produced no stdout for ${execIdleMs}ms; not retried (silence for a full budget is not transient)`,
+            `CLI produced no output for ${execIdleMs}ms; not retried (silence for a full budget is not transient)`,
           ),
         ),
       );
@@ -767,10 +767,20 @@ async function requestExecCompletionOnce(input: CompletionRequest): Promise<Comp
       stdout += chunk;
     });
     child.stderr.on("data", (chunk: string) => {
-      // An agentic CLI can work for ten minutes with nothing on stdout, which
-      // is indistinguishable from a hang to anyone watching the job. The
-      // wrapper narrates on stderr; forward whole lines as they arrive so the
-      // log shows what the reviewer is doing rather than nothing at all.
+      // Narration counts as life. The wrapper prints the agent's tool calls on
+      // stderr and its answer on stdout, and stdout stays empty until the very
+      // end — so watching stdout alone, a review that had read thirty-three
+      // files across thirteen minutes was declared to have "produced no
+      // stdout", killed, and reported as a failure, while the job log was
+      // still filling with the narration that proved otherwise.
+      //
+      // Letting narration reset the clock was tried and reverted once, because
+      // subagent chatter kept runs alive until the total cap. Two things have
+      // changed: subagents are off, so this stream now carries one line per
+      // real tool call, and there are two hard ceilings above it — the exec
+      // total cap here, and the review's own wall-clock deadline. A stuck
+      // agent still dies; a working one no longer does.
+      touch();
       if (input.onLog) {
         stderrLine += chunk;
         const parts = stderrLine.split(/\r?\n/);
